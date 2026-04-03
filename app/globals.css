@@ -1,0 +1,105 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+@layer base {
+  :root {
+    /* Swiss Banking Light Theme - Deep Blue + White */
+    --background: 210 33% 99%;
+    --foreground: 210 29% 10%;
+    --card: 210 60% 98%;
+    --card-foreground: 210 29% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 210 29% 10%;
+    --primary: 207 78% 21%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 40% 94%;
+    --secondary-foreground: 207 78% 21%;
+    --muted: 210 30% 95%;
+    --muted-foreground: 210 10% 45%;
+    --accent: 210 100% 56%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 210 40% 90%;
+    --input: 210 30% 88%;
+    --ring: 207 78% 21%;
+    --chart-1: 207 78% 21%;
+    --chart-2: 210 100% 56%;
+    --chart-3: 170 60% 40%;
+    --chart-4: 45 90% 55%;
+    --chart-5: 0 70% 55%;
+    --radius: 0.625rem;
+    --sidebar-background: 207 78% 15%;
+    --sidebar-foreground: 210 20% 92%;
+    --sidebar-primary: 210 100% 56%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 207 60% 22%;
+    --sidebar-accent-foreground: 210 20% 92%;
+    --sidebar-border: 207 50% 25%;
+    --sidebar-ring: 210 100% 56%;
+    /* Custom tokens */
+    --success: 152 60% 40%;
+    --success-foreground: 0 0% 100%;
+    --warning: 45 90% 55%;
+    --warning-foreground: 45 90% 15%;
+    --gold: 45 90% 55%;
+    --gold-foreground: 45 90% 15%;
+  }
+  .dark {
+    /* Premium Vault Dark Theme - Black + Gold */
+    --background: 240 7% 5%;
+    --foreground: 0 0% 96%;
+    --card: 240 6% 11%;
+    --card-foreground: 0 0% 96%;
+    --popover: 240 6% 11%;
+    --popover-foreground: 0 0% 96%;
+    --primary: 45 100% 50%;
+    --primary-foreground: 240 7% 5%;
+    --secondary: 240 4% 16%;
+    --secondary-foreground: 0 0% 96%;
+    --muted: 240 4% 16%;
+    --muted-foreground: 240 3% 55%;
+    --accent: 48 100% 54%;
+    --accent-foreground: 240 7% 5%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 4% 18%;
+    --input: 240 4% 18%;
+    --ring: 45 100% 50%;
+    --chart-1: 45 100% 50%;
+    --chart-2: 48 100% 54%;
+    --chart-3: 170 60% 40%;
+    --chart-4: 210 80% 55%;
+    --chart-5: 0 70% 55%;
+    --sidebar-background: 240 7% 4%;
+    --sidebar-foreground: 240 3% 75%;
+    --sidebar-primary: 45 100% 50%;
+    --sidebar-primary-foreground: 240 7% 5%;
+    --sidebar-accent: 240 5% 12%;
+    --sidebar-accent-foreground: 0 0% 96%;
+    --sidebar-border: 240 4% 14%;
+    --sidebar-ring: 45 100% 50%;
+    --success: 152 60% 40%;
+    --success-foreground: 0 0% 100%;
+    --warning: 45 90% 55%;
+    --warning-foreground: 45 90% 15%;
+    --gold: 45 100% 50%;
+    --gold-foreground: 240 7% 5%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
