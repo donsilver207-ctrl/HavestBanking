@@ -23,6 +23,7 @@ interface Account {
   id: string
   name: string
   currency: string
+  balance: number
 }
 
 interface Wallet {
@@ -46,7 +47,6 @@ type ValidationState = "idle" | "loading" | "valid" | "invalid"
 function validateIbanFormat(iban: string): boolean {
   const cleaned = iban.replace(/\s/g, "").toUpperCase()
   if (!/^[A-Z]{2}\d{2}[A-Z0-9]{1,30}$/.test(cleaned)) return false
-  // Move first 4 chars to end, convert letters to numbers, check mod97
   const rearranged = cleaned.slice(4) + cleaned.slice(0, 4)
   const numeric = rearranged
     .split("")
@@ -73,9 +73,9 @@ export default function TransfersPage() {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
 
-  // ── Internal form
-  const [intFromWallet, setIntFromWallet] = useState("")
-  const [intToAccount, setIntToAccount] = useState("")
+  // ── Internal form (Account → Wallet)
+  const [intFromAccount, setIntFromAccount] = useState("")
+  const [intToWallet, setIntToWallet] = useState("")
   const [intAmount, setIntAmount] = useState("")
   const [intReference, setIntReference] = useState("")
 
@@ -117,7 +117,7 @@ export default function TransfersPage() {
       const [accountsRes, walletsRes, beneficiariesRes] = await Promise.all([
         supabase
           .from("accounts")
-          .select("id, name, currency")
+          .select("id, name, currency, balance")
           .eq("user_id", user.id)
           .eq("is_active", true),
         supabase
@@ -140,8 +140,8 @@ export default function TransfersPage() {
     fetchData()
   }, [])
 
-  // ── Balance check ─────────────────────────────────────────────────────────
-  function checkBalance(walletId: string, amount: string): boolean {
+  // ── Wallet balance check (for SWIFT / Wire / Scheduled) ───────────────────
+  function checkWalletBalance(walletId: string, amount: string): boolean {
     const wallet = wallets.find((w) => w.id === walletId)
     if (!wallet) return false
     const parsed = parseFloat(amount)
@@ -155,36 +155,40 @@ export default function TransfersPage() {
     return true
   }
 
-  // ── IBAN validation (format + API) ────────────────────────────────────────
+  // ── Account balance check (for Internal) ─────────────────────────────────
+  function checkAccountBalance(accountId: string, amount: string): boolean {
+    const account = accounts.find((a) => a.id === accountId)
+    if (!account) return false
+    const parsed = parseFloat(amount)
+    if (isNaN(parsed) || parsed <= 0) return false
+    if (parsed > account.balance) {
+      toast.error(
+        `Insufficient balance. Available: ${account.balance.toLocaleString()} ${account.currency}`
+      )
+      return false
+    }
+    return true
+  }
+
+  // ── IBAN validation ───────────────────────────────────────────────────────
   async function validateIban(raw: string) {
     const iban = raw.replace(/\s/g, "").toUpperCase()
     if (!iban) { setSwIbanState("idle"); return }
 
-    // Fast offline format check first
-    /*if (!validateIbanFormat(iban)) {
-      setSwIbanState("invalid")
-      toast.error("IBAN format is invalid.")
-      return
-    }*/
-
-    setSwIbanState("loading") /*
+    setSwIbanState("loading")
     try {
-      // apilayer Bank Data API — free tier, 100 req/mo
-      // Requires NEXT_PUBLIC_APILAYER_KEY in your .env
       const apiKey = process.env.NEXT_PUBLIC_APILAYER_KEY
       if (!apiKey) {
-        // No API key: trust the format check
         setSwIbanState("valid")
         return
       }
       const res = await fetch(
-        `https://api.apilayer.com/bank_data/iban_validate?iban_number${iban}`,
+        `https://api.apilayer.com/bank_data/iban_validate?iban_number=${iban}`,
         { headers: { apikey: apiKey } }
       )
       const data = await res.json()
       if (data.valid) {
         setSwIbanState("valid")
-        // Auto-fill beneficiary name from bank if empty
         if (!swBeneficiaryName && data.bank_data?.name) {
           setSwBeneficiaryName(data.bank_data.name)
         }
@@ -193,13 +197,11 @@ export default function TransfersPage() {
         toast.error("IBAN validation failed — account may not exist.")
       }
     } catch {
-      // Network issue: fall back to format check (already passed)
       setSwIbanState("valid")
-    }*/
-      setSwIbanState("valid")
+    }
   }
 
-  // ── SWIFT validation (format + API) ──────────────────────────────────────
+  // ── SWIFT validation ──────────────────────────────────────────────────────
   async function validateSwift(raw: string) {
     const swift = raw.replace(/\s/g, "").toUpperCase()
     if (!swift) { setSwSwiftState("idle"); return }
@@ -233,10 +235,11 @@ export default function TransfersPage() {
     }
   }
 
-  // ── Shared insert ─────────────────────────────────────────────────────────
-  /*async function insertTransfer(payload: {
+  // ── Shared RPC call ───────────────────────────────────────────────────────
+  async function insertTransfer(payload: {
     transfer_type: "internal" | "swift" | "wire" | "scheduled"
-    from_wallet_currency: string
+    from_wallet_currency: string     // for internal: destination wallet currency; for others: source wallet currency
+    from_account_id?: string | null  // source account (internal only)
     to_beneficiary_id?: string | null
     to_iban?: string | null
     amount: number
@@ -247,111 +250,85 @@ export default function TransfersPage() {
   }) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) throw new Error("Not authenticated")
-    const { error } = await supabase.from("transfers").insert({ user_id: user.id, ...payload })
+
+    const { error } = await supabase.rpc("process_transfer", {
+      p_user_id:              user.id,
+      p_transfer_type:        payload.transfer_type,
+      p_from_wallet_currency: payload.from_wallet_currency,
+      p_from_account_id:      payload.from_account_id ?? null,
+      p_to_beneficiary_id:    payload.to_beneficiary_id ?? null,
+      p_to_iban:              payload.to_iban ?? null,
+      p_amount:               payload.amount,
+      p_currency:             payload.currency,
+      p_reference:            payload.reference ?? null,
+      p_scheduled_for:        payload.scheduled_for ?? null,
+      p_status:               payload.status,
+    })
+
     if (error) throw error
-  }*/
-    async function insertTransfer(payload: {
-      transfer_type: "internal" | "swift" | "wire" | "scheduled"
-      from_wallet_currency: string
-      to_account_id?: string | null        // ← add this
-      to_beneficiary_id?: string | null
-      to_iban?: string | null
-      amount: number
-      currency: string
-      reference?: string | null
-      scheduled_for?: string | null
-      status: "pending" | "scheduled"
-    }) {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) throw new Error("Not authenticated")
-    
-      const { error } = await supabase.rpc("process_transfer", {
-        p_user_id:              user.id,
-        p_transfer_type:        payload.transfer_type,
-        p_from_wallet_currency: payload.from_wallet_currency,
-        p_to_account_id:        payload.to_account_id ?? null,   // ← add this
-        p_to_beneficiary_id:    payload.to_beneficiary_id ?? null,
-        p_to_iban:              payload.to_iban ?? null,
-        p_amount:               payload.amount,
-        p_currency:             payload.currency,
-        p_reference:            payload.reference ?? null,
-        p_scheduled_for:        payload.scheduled_for ?? null,
-        p_status:               payload.status,
-      })
-    
-      if (error) throw error
-    
-      const { data: updatedWallets } = await supabase
+
+    // Refresh wallets and accounts after any transfer
+    const [walletsRes, accountsRes] = await Promise.all([
+      supabase
         .from("wallets")
         .select("id, currency, symbol, balance")
         .eq("user_id", user.id)
-        .order("balance", { ascending: false })
-      if (updatedWallets) setWallets(updatedWallets)
-    }
-  // ── Submit handlers ───────────────────────────────────────────────────────
-  /*async function handleInternal(e: React.FormEvent) {
+        .order("balance", { ascending: false }),
+      supabase
+        .from("accounts")
+        .select("id, name, currency, balance")
+        .eq("user_id", user.id)
+        .eq("is_active", true),
+    ])
+    if (walletsRes.data) setWallets(walletsRes.data)
+    if (accountsRes.data) setAccounts(accountsRes.data)
+  }
+
+  // ── Internal: Account → Wallet ────────────────────────────────────────────
+  async function handleInternal(e: React.FormEvent) {
     e.preventDefault()
-    if (!checkBalance(intFromWallet, intAmount)) return
+    if (!checkAccountBalance(intFromAccount, intAmount)) return
     setSubmitting(true)
     try {
-      const fromWallet = wallets.find((w) => w.id === intFromWallet)!
+      const toWallet = wallets.find((w) => w.id === intToWallet)!
       await insertTransfer({
-        transfer_type: "internal",
-        from_wallet_currency: fromWallet.currency,
-        amount: parseFloat(intAmount),
-        currency: fromWallet.currency,
-        reference: intReference || null,
-        status: "pending",
+        transfer_type:        "internal",
+        from_wallet_currency: toWallet.currency,  // destination wallet currency
+        from_account_id:      intFromAccount,      // source account
+        amount:               parseFloat(intAmount),
+        currency:             toWallet.currency,
+        reference:            intReference || null,
+        status:               "pending",
       })
       toast.success("Internal transfer submitted.")
-      setIntFromWallet(""); setIntToAccount(""); setIntAmount(""); setIntReference("")
+      setIntFromAccount("")
+      setIntToWallet("")
+      setIntAmount("")
+      setIntReference("")
     } catch (err: any) {
       toast.error(err.message ?? "Transfer failed.")
     } finally {
       setSubmitting(false)
     }
-  }*/
+  }
 
-    async function handleInternal(e: React.FormEvent) {
-      e.preventDefault()
-      if (!checkBalance(intFromWallet, intAmount)) return
-      setSubmitting(true)
-      try {
-        const fromWallet = wallets.find((w) => w.id === intFromWallet)!
-        await insertTransfer({
-          transfer_type: "internal",
-          from_wallet_currency: fromWallet.currency,
-          to_account_id: intToAccount,        // ← pass the account id
-          amount: parseFloat(intAmount),
-          currency: fromWallet.currency,
-          reference: intReference || null,
-          status: "pending",
-        })
-        toast.success("Internal transfer submitted.")
-        setIntFromWallet(""); setIntToAccount(""); setIntAmount(""); setIntReference("")
-      } catch (err: any) {
-        toast.error(err.message ?? "Transfer failed.")
-      } finally {
-        setSubmitting(false)
-      }
-    }
-
+  // ── SWIFT ─────────────────────────────────────────────────────────────────
   async function handleSwift(e: React.FormEvent) {
     e.preventDefault()
     if (swIbanState !== "valid") { toast.error("Please enter a valid IBAN."); return }
     if (swSwiftState !== "valid") { toast.error("Please enter a valid SWIFT/BIC."); return }
-    if (!checkBalance(swFromWallet, swAmount)) return
+    if (!checkWalletBalance(swFromWallet, swAmount)) return
     setSubmitting(true)
     try {
       const fromWallet = wallets.find((w) => w.id === swFromWallet)!
       await insertTransfer({
-        transfer_type: "swift",
+        transfer_type:        "swift",
         from_wallet_currency: fromWallet.currency,
-        to_iban: swIban.replace(/\s/g, "").toUpperCase(),
-        amount: parseFloat(swAmount),
-        currency: swCurrency,
-        reference: swPurpose || null,
-        status: "pending",
+        to_iban:              swIban.replace(/\s/g, "").toUpperCase(),
+        amount:               parseFloat(swAmount),
+        currency:             swCurrency,
+        reference:            swPurpose || null,
+        status:               "pending",
       })
       toast.success("SWIFT transfer submitted.")
       setSwFromWallet(""); setSwSwift(""); setSwIban(""); setSwBeneficiaryName("")
@@ -364,19 +341,20 @@ export default function TransfersPage() {
     }
   }
 
+  // ── Wire ──────────────────────────────────────────────────────────────────
   async function handleWire(e: React.FormEvent) {
     e.preventDefault()
-    if (!checkBalance(wiFromWallet, wiAmount)) return
+    if (!checkWalletBalance(wiFromWallet, wiAmount)) return
     setSubmitting(true)
     try {
       const fromWallet = wallets.find((w) => w.id === wiFromWallet)!
       await insertTransfer({
-        transfer_type: "wire",
+        transfer_type:        "wire",
         from_wallet_currency: fromWallet.currency,
-        reference: `Bank: ${wiBankName} | Routing: ${wiRouting} | Acct: ${wiAccountNumber}`,
-        amount: parseFloat(wiAmount),
-        currency: fromWallet.currency,
-        status: "pending",
+        reference:            `Bank: ${wiBankName} | Routing: ${wiRouting} | Acct: ${wiAccountNumber}`,
+        amount:               parseFloat(wiAmount),
+        currency:             fromWallet.currency,
+        status:               "pending",
       })
       toast.success("Wire transfer submitted.")
       setWiFromWallet(""); setWiBankName(""); setWiRouting(""); setWiAccountNumber(""); setWiAmount("")
@@ -387,23 +365,24 @@ export default function TransfersPage() {
     }
   }
 
+  // ── Scheduled ─────────────────────────────────────────────────────────────
   async function handleScheduled(e: React.FormEvent) {
     e.preventDefault()
-    if (!checkBalance(scFromWallet, scAmount)) return
+    if (!checkWalletBalance(scFromWallet, scAmount)) return
     setSubmitting(true)
     try {
       const fromWallet = wallets.find((w) => w.id === scFromWallet)!
       const beneficiary = beneficiaries.find((b) => b.id === scToBeneficiary)
       await insertTransfer({
-        transfer_type: "scheduled",
+        transfer_type:        "scheduled",
         from_wallet_currency: fromWallet.currency,
-        to_beneficiary_id: beneficiary?.id ?? null,
-        to_iban: beneficiary?.iban ?? null,
-        amount: parseFloat(scAmount),
-        currency: fromWallet.currency,
-        reference: scFrequency ? `Frequency: ${scFrequency}` : null,
-        scheduled_for: new Date(scDate).toISOString(),
-        status: "scheduled",
+        to_beneficiary_id:    beneficiary?.id ?? null,
+        to_iban:              beneficiary?.iban ?? null,
+        amount:               parseFloat(scAmount),
+        currency:             fromWallet.currency,
+        reference:            scFrequency ? `Frequency: ${scFrequency}` : null,
+        scheduled_for:        new Date(scDate).toISOString(),
+        status:               "scheduled",
       })
       toast.success("Transfer scheduled.")
       setScFromWallet(""); setScToBeneficiary(""); setScAmount(""); setScDate(""); setScFrequency("")
@@ -415,7 +394,7 @@ export default function TransfersPage() {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
-  function BalanceHint({ walletId, amount }: { walletId: string; amount: string }) {
+  function WalletBalanceHint({ walletId, amount }: { walletId: string; amount: string }) {
     const wallet = wallets.find((w) => w.id === walletId)
     if (!wallet) return null
     const parsed = parseFloat(amount)
@@ -424,6 +403,20 @@ export default function TransfersPage() {
       <p className={`text-xs mt-1 flex items-center gap-1 ${insufficient ? "text-destructive" : "text-muted-foreground"}`}>
         {insufficient && <AlertTriangle className="h-3 w-3" />}
         Available: {wallet.symbol}{wallet.balance.toLocaleString()} {wallet.currency}
+        {insufficient && " — insufficient funds"}
+      </p>
+    )
+  }
+
+  function AccountBalanceHint({ accountId, amount }: { accountId: string; amount: string }) {
+    const account = accounts.find((a) => a.id === accountId)
+    if (!account) return null
+    const parsed = parseFloat(amount)
+    const insufficient = !isNaN(parsed) && parsed > account.balance
+    return (
+      <p className={`text-xs mt-1 flex items-center gap-1 ${insufficient ? "text-destructive" : "text-muted-foreground"}`}>
+        {insufficient && <AlertTriangle className="h-3 w-3" />}
+        Available: {account.balance.toLocaleString()} {account.currency}
         {insufficient && " — insufficient funds"}
       </p>
     )
@@ -470,28 +463,30 @@ export default function TransfersPage() {
           <TabsTrigger value="scheduled">Scheduled</TabsTrigger>
         </TabsList>
 
-        {/* ── Internal ── */}
+        {/* ── Internal: Account → Wallet ── */}
         <TabsContent value="internal">
           <Card className="border-border">
             <CardHeader><CardTitle>Internal Transfer</CardTitle></CardHeader>
             <CardContent>
               <form className="flex flex-col gap-4" onSubmit={handleInternal}>
                 <div className="flex flex-col gap-1.5">
-                  <Label>From Wallet</Label>
-                  <Select value={intFromWallet} onValueChange={setIntFromWallet} required>
-                    <SelectTrigger><SelectValue placeholder="Select source wallet" /></SelectTrigger>
-                    <SelectContent><WalletOptions /></SelectContent>
+                  <Label>From Account</Label>
+                  <Select value={intFromAccount} onValueChange={setIntFromAccount} required>
+                    <SelectTrigger><SelectValue placeholder="Select source account" /></SelectTrigger>
+                    <SelectContent>
+                      {accounts.map((a) => (
+                        <SelectItem key={a.id} value={a.id}>
+                          {a.name} ({a.currency}) — {a.balance.toLocaleString()}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
                   </Select>
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <Label>To Account</Label>
-                  <Select value={intToAccount} onValueChange={setIntToAccount} required>
-                    <SelectTrigger><SelectValue placeholder="Select destination account" /></SelectTrigger>
-                    <SelectContent>
-                      {accounts.map((a) => (
-                        <SelectItem key={a.id} value={a.id}>{a.name} ({a.currency})</SelectItem>
-                      ))}
-                    </SelectContent>
+                  <Label>To Wallet</Label>
+                  <Select value={intToWallet} onValueChange={setIntToWallet} required>
+                    <SelectTrigger><SelectValue placeholder="Select destination wallet" /></SelectTrigger>
+                    <SelectContent><WalletOptions /></SelectContent>
                   </Select>
                 </div>
                 <div className="flex flex-col gap-1.5">
@@ -503,7 +498,7 @@ export default function TransfersPage() {
                     onChange={(e) => setIntAmount(e.target.value)}
                     required
                   />
-                  <BalanceHint walletId={intFromWallet} amount={intAmount} />
+                  <AccountBalanceHint accountId={intFromAccount} amount={intAmount} />
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <Label>Reference (Optional)</Label>
@@ -597,7 +592,7 @@ export default function TransfersPage() {
                       onChange={(e) => setSwAmount(e.target.value)}
                       required
                     />
-                    <BalanceHint walletId={swFromWallet} amount={swAmount} />
+                    <WalletBalanceHint walletId={swFromWallet} amount={swAmount} />
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>Currency</Label>
@@ -684,7 +679,7 @@ export default function TransfersPage() {
                     onChange={(e) => setWiAmount(e.target.value)}
                     required
                   />
-                  <BalanceHint walletId={wiFromWallet} amount={wiAmount} />
+                  <WalletBalanceHint walletId={wiFromWallet} amount={wiAmount} />
                 </div>
                 <Button type="submit" disabled={submitting}>
                   {submitting ? "Submitting…" : "Submit Wire Transfer"}
@@ -731,7 +726,7 @@ export default function TransfersPage() {
                     onChange={(e) => setScAmount(e.target.value)}
                     required
                   />
-                  <BalanceHint walletId={scFromWallet} amount={scAmount} />
+                  <WalletBalanceHint walletId={scFromWallet} amount={scAmount} />
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="flex flex-col gap-1.5">
