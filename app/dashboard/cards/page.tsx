@@ -14,6 +14,7 @@ import {
   Loader2,
   AlertCircle,
   CheckCircle2,
+  RefreshCw,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -50,11 +51,16 @@ type CardRow = {
   currency: string
 }
 
-type AccountRow = {
+type WalletRow = {
   id: string
-  name: string
-  balance: number
   currency: string
+  symbol: string
+  balance: number
+}
+
+type FxRateRow = {
+  pair: string
+  rate: number
 }
 
 type BinInfo = {
@@ -134,6 +140,27 @@ function cardGradient(type: string, frozen: boolean): string {
   return "bg-gradient-to-br from-[#1e3a5f] to-[#2563eb]"
 }
 
+// ── FX conversion helper ───────────────────────────────────────────────
+// Looks up rate for FROM->TO using pairs stored as e.g. "USD/CHF" or "CHF/USD"
+function convertAmount(
+  amount: number,
+  from: string,
+  to: string,
+  fxRates: FxRateRow[]
+): number | null {
+  if (from === to) return amount
+
+  // Try direct pair
+  const direct = fxRates.find(r => r.pair === `${from}/${to}`)
+  if (direct) return amount * direct.rate
+
+  // Try inverse pair
+  const inverse = fxRates.find(r => r.pair === `${to}/${from}`)
+  if (inverse) return amount / inverse.rate
+
+  return null // rate not found
+}
+
 export default function CardsPage() {
   const supabase = createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -141,10 +168,10 @@ export default function CardsPage() {
   )
 
   const [cards, setCards] = useState<CardRow[]>([])
-  const [accounts, setAccounts] = useState<AccountRow[]>([])
+  const [wallets, setWallets] = useState<WalletRow[]>([])
+  const [fxRates, setFxRates] = useState<FxRateRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  // showDetails stores { cardId: boolean } — true means revealed
   const [showDetails, setShowDetails] = useState<Record<string, boolean>>({})
 
   // ── Link card state ────────────────────────────────────────────────
@@ -165,10 +192,11 @@ export default function CardsPage() {
   const [loadOpen, setLoadOpen] = useState(false)
   const [selectedCard, setSelectedCard] = useState<CardRow | null>(null)
   const [loadAmount, setLoadAmount] = useState("")
-  const [fromAccountId, setFromAccountId] = useState("")
+  const [fromWalletId, setFromWalletId] = useState("")
   const [loadPending, setLoadPending] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loadSuccess, setLoadSuccess] = useState(false)
+  const [convertedPreview, setConvertedPreview] = useState<{ amount: number; rate: number } | null>(null)
 
   // ── Fetch ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -180,19 +208,49 @@ export default function CardsPage() {
 
       const [
         { data: cardsData, error: cardsErr },
-        { data: accountsData, error: accErr },
+        { data: walletsData, error: walletsErr },
+        { data: fxData, error: fxErr },
       ] = await Promise.all([
         supabase.from("cards").select("*").eq("user_id", user.id).order("created_at"),
-        supabase.from("accounts").select("id, name, balance, currency").eq("user_id", user.id).eq("is_active", true),
+        supabase.from("wallets").select("id, currency, symbol, balance").eq("user_id", user.id),
+        supabase.from("fx_rates").select("pair, rate"),
       ])
 
-      if (cardsErr || accErr) setError(cardsErr?.message ?? accErr?.message ?? "Failed to load data")
+      if (cardsErr || walletsErr || fxErr) {
+        setError(cardsErr?.message ?? walletsErr?.message ?? fxErr?.message ?? "Failed to load data")
+      }
       setCards(cardsData ?? [])
-      setAccounts(accountsData ?? [])
+      setWallets(walletsData ?? [])
+      setFxRates(fxData ?? [])
       setLoading(false)
     }
     fetchData()
   }, [])
+
+  // ── Recompute conversion preview when wallet or amount changes ─────
+  useEffect(() => {
+    if (!selectedCard || !fromWalletId || !loadAmount) {
+      setConvertedPreview(null)
+      return
+    }
+    const amt = parseFloat(loadAmount)
+    if (isNaN(amt) || amt <= 0) { setConvertedPreview(null); return }
+
+    const wallet = wallets.find(w => w.id === fromWalletId)
+    if (!wallet) { setConvertedPreview(null); return }
+
+    // First load — no conversion needed, card will take wallet's currency
+    const isFirstLoad = !selectedCard.currency || selectedCard.currency === ""
+    if (isFirstLoad || wallet.currency === selectedCard.currency) {
+      setConvertedPreview(null)
+      return
+    }
+
+    const converted = convertAmount(amt, wallet.currency, selectedCard.currency, fxRates)
+    if (converted === null) { setConvertedPreview(null); return }
+
+    setConvertedPreview({ amount: converted, rate: converted / amt })
+  }, [fromWalletId, loadAmount, selectedCard, wallets, fxRates])
 
   // ── Card number helpers ────────────────────────────────────────────
   function luhnCheck(num: string): boolean {
@@ -293,17 +351,17 @@ export default function CardsPage() {
 
     setLinking(true)
     const { data: { user } } = await supabase.auth.getUser()
-    // With this:
     const { data, error } = await supabase.from("cards").insert({
       user_id: user!.id,
       card_type: cardType,
-      last_four: `${rawNumber}/${cvv}`,   // stored as "4532887712348721/412"
+      last_four: `${rawNumber}/${cvv}`,
       card_holder: cardHolder.trim(),
       expiry,
       is_frozen: false,
       spending_limit: 0,
       spent_this_month: 0,
-      currency: accounts[0]?.currency ?? "CHF",
+      // Currency intentionally empty — locked in on first load
+      currency: "",
     }).select().single()
 
     setLinking(false)
@@ -317,49 +375,96 @@ export default function CardsPage() {
   function openLoad(card: CardRow) {
     setSelectedCard(card)
     setLoadAmount("")
-    setFromAccountId(accounts[0]?.id ?? "")
+    setFromWalletId(wallets[0]?.id ?? "")
     setLoadError(null)
     setLoadSuccess(false)
+    setConvertedPreview(null)
     setLoadOpen(true)
   }
+
   function parseCardData(raw: string): { number: string; cvv: string; lastFour: string } {
     const [number = "", cvv = ""] = raw.split("/")
     const lastFour = number.slice(-4)
     const formatted = number.replace(/(.{4})/g, "$1 ").trim()
     return { number: formatted, cvv, lastFour }
   }
+
   async function handleLoad() {
     if (!selectedCard) return
     const amt = parseFloat(loadAmount)
     if (isNaN(amt) || amt <= 0) { setLoadError("Enter a valid amount"); return }
-    const account = accounts.find(a => a.id === fromAccountId)
-    if (!account) { setLoadError("Select an account"); return }
-    if (amt > account.balance) { setLoadError("Insufficient account balance"); return }
+
+    const wallet = wallets.find(w => w.id === fromWalletId)
+    if (!wallet) { setLoadError("Select a wallet"); return }
+    if (amt > wallet.balance) { setLoadError("Insufficient wallet balance"); return }
+
+    // Is this the very first load? If so, lock in the wallet's currency as base
+    const isFirstLoad = !selectedCard.currency || selectedCard.currency === ""
+
+    let creditAmount: number
+    let cardCurrency: string
+
+    if (isFirstLoad) {
+      // Lock in the wallet's currency as the card's base currency
+      creditAmount = amt
+      cardCurrency = wallet.currency
+    } else if (wallet.currency === selectedCard.currency) {
+      // Same currency — no conversion needed
+      creditAmount = amt
+      cardCurrency = selectedCard.currency
+    } else {
+      // Different currency — convert to card's base currency
+      const converted = convertAmount(amt, wallet.currency, selectedCard.currency, fxRates)
+      if (converted === null) {
+        setLoadError(`No FX rate found for ${wallet.currency} → ${selectedCard.currency}`)
+        return
+      }
+      creditAmount = converted
+      cardCurrency = selectedCard.currency
+    }
 
     setLoadPending(true)
     setLoadError(null)
 
-    const { error: accErr } = await supabase
-      .from("accounts").update({ balance: account.balance - amt }).eq("id", account.id)
-    if (accErr) { setLoadError(accErr.message); setLoadPending(false); return }
+    // Deduct from wallet
+    const { error: walletErr } = await supabase
+      .from("wallets").update({ balance: wallet.balance - amt }).eq("id", wallet.id)
+    if (walletErr) { setLoadError(walletErr.message); setLoadPending(false); return }
 
-    const newLimit = selectedCard.spending_limit + amt
+    // Update card spending_limit in base currency; set currency on first load
+    const newLimit = selectedCard.spending_limit + creditAmount
+    const cardUpdate: Record<string, unknown> = { spending_limit: newLimit }
+    if (isFirstLoad) cardUpdate.currency = cardCurrency
+
     const { error: cardErr } = await supabase
-      .from("cards").update({ spending_limit: newLimit }).eq("id", selectedCard.id)
+      .from("cards").update(cardUpdate).eq("id", selectedCard.id)
     if (cardErr) { setLoadError(cardErr.message); setLoadPending(false); return }
 
+    // Log transaction in wallet's currency (what was actually debited)
     const { data: { user } } = await supabase.auth.getUser()
+    const { lastFour } = parseCardData(selectedCard.last_four)
+    const conversionNote =
+      !isFirstLoad && wallet.currency !== cardCurrency
+        ? ` (converted to ${creditAmount.toFixed(2)} ${cardCurrency})`
+        : ""
     await supabase.from("transactions").insert({
       user_id: user!.id,
       type: "debit",
-      description: `Loaded pre-paid card ••••${selectedCard.last_four}`,
+      description: `Loaded pre-paid card ••••${lastFour}${conversionNote}`,
       amount: amt,
-      currency: account.currency,
+      currency: wallet.currency,
       status: "completed",
     })
 
-    setCards(prev => prev.map(c => c.id === selectedCard.id ? { ...c, spending_limit: newLimit } : c))
-    setAccounts(prev => prev.map(a => a.id === account.id ? { ...a, balance: a.balance - amt } : a))
+    // Update local state
+    setCards(prev => prev.map(c =>
+      c.id === selectedCard.id
+        ? { ...c, spending_limit: newLimit, currency: cardCurrency }
+        : c
+    ))
+    setWallets(prev => prev.map(w =>
+      w.id === wallet.id ? { ...w, balance: w.balance - amt } : w
+    ))
     setLoadPending(false)
     setLoadSuccess(true)
   }
@@ -421,6 +526,7 @@ export default function CardsPage() {
             ? (card.spent_this_month / card.spending_limit) * 100
             : 0
           const availableBalance = Math.max(0, card.spending_limit - card.spent_this_month)
+          const isUnloaded = !card.currency || card.currency === ""
 
           return (
             <div key={card.id} className="flex flex-col gap-4">
@@ -461,9 +567,9 @@ export default function CardsPage() {
 
                 {/* Card number */}
                 <div className="mt-4">
-                <p className="font-mono text-base tracking-[0.22em] text-white/90 tabular-nums">
-                  {revealed ? fullNumber : `•••• •••• •••• ${lastFour}`}
-                </p>
+                  <p className="font-mono text-base tracking-[0.22em] text-white/90 tabular-nums">
+                    {revealed ? fullNumber : `•••• •••• •••• ${lastFour}`}
+                  </p>
                 </div>
 
                 {/* Bottom row */}
@@ -479,7 +585,10 @@ export default function CardsPage() {
                   <div>
                     <p className="text-[9px] font-medium tracking-widest text-white/40 uppercase mb-0.5">Available</p>
                     <p className="text-sm font-semibold tracking-widest text-white">
-                      {card.currency} {availableBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      {isUnloaded
+                        ? "—"
+                        : `${card.currency} ${availableBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                      }
                     </p>
                   </div>
                   <div className="text-right">
@@ -492,16 +601,16 @@ export default function CardsPage() {
                   </div>
                 </div>
 
-                {/* Available balance badge */}
+                {/* CVV reveal badge */}
                 <div className="absolute top-4 left-1/2 -translate-x-1/2">
-                {revealed && (
-                  <div className="absolute top-3 right-3 flex flex-col items-end gap-1">
-                    <div className="rounded-lg bg-black/30 backdrop-blur-sm border border-white/10 px-2.5 py-1 text-right">
-                      <p className="text-[9px] text-white/50 uppercase tracking-widest">CVV</p>
-                      <p className="text-sm font-bold font-mono text-white tracking-widest">{storedCvv}</p>
+                  {revealed && (
+                    <div className="absolute top-3 right-3 flex flex-col items-end gap-1">
+                      <div className="rounded-lg bg-black/30 backdrop-blur-sm border border-white/10 px-2.5 py-1 text-right">
+                        <p className="text-[9px] text-white/50 uppercase tracking-widest">CVV</p>
+                        <p className="text-sm font-bold font-mono text-white tracking-widest">{storedCvv}</p>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
                 </div>
               </div>
 
@@ -512,7 +621,10 @@ export default function CardsPage() {
                     <div className="flex items-center justify-between text-sm">
                       <span className="text-muted-foreground">Loaded Balance</span>
                       <span className="font-medium text-foreground">
-                        {card.currency} {card.spent_this_month.toLocaleString(undefined, { minimumFractionDigits: 2 })} / {card.spending_limit.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        {isUnloaded
+                          ? <span className="text-muted-foreground text-xs italic">Load to set currency</span>
+                          : `${card.currency} ${card.spent_this_month.toLocaleString(undefined, { minimumFractionDigits: 2 })} / ${card.spending_limit.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                        }
                       </span>
                     </div>
                     <Progress value={utilization} className="mt-2 h-1.5" />
@@ -710,7 +822,10 @@ export default function CardsPage() {
           <DialogHeader>
             <DialogTitle>Load Card Balance</DialogTitle>
             <DialogDescription>
-              Transfer funds from your account to card ••••{selectedCard?.last_four}.
+              {selectedCard && (!selectedCard.currency || selectedCard.currency === "")
+                ? "First load sets this card's base currency. All future loads will be converted to it."
+                : `Card balance is held in ${selectedCard?.currency}. Other wallet currencies will be auto-converted.`
+              }
             </DialogDescription>
           </DialogHeader>
 
@@ -719,8 +834,16 @@ export default function CardsPage() {
               <CheckCircle2 className="h-10 w-10 text-green-500" />
               <p className="font-medium text-foreground">Card loaded successfully!</p>
               <p className="text-sm text-muted-foreground">
-                {selectedCard?.currency}{" "}
-                {parseFloat(loadAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })} added to card ••••{selectedCard?.last_four}
+                {(() => {
+                  const wallet = wallets.find(w => w.id === fromWalletId)
+                  const lf = selectedCard ? parseCardData(selectedCard.last_four).lastFour : ""
+                  const fmtAmt = parseFloat(loadAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })
+                  if (convertedPreview && wallet && selectedCard?.currency) {
+                    return `${wallet.currency} ${fmtAmt} → ${selectedCard.currency} ${convertedPreview.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} added to card ••••${lf}`
+                  }
+                  const displayCcy = selectedCard?.currency || wallet?.currency || ""
+                  return `${displayCcy} ${fmtAmt} added to card ••••${lf}`
+                })()}
               </p>
               <Button className="mt-2" onClick={() => setLoadOpen(false)}>Done</Button>
             </div>
@@ -728,27 +851,28 @@ export default function CardsPage() {
             <>
               <div className="flex flex-col gap-4">
                 <div className="flex flex-col gap-1.5">
-                  <Label>From Account</Label>
-                  <Select value={fromAccountId} onValueChange={setFromAccountId}>
-                    <SelectTrigger><SelectValue placeholder="Select account" /></SelectTrigger>
+                  <Label>From Wallet</Label>
+                  <Select value={fromWalletId} onValueChange={setFromWalletId}>
+                    <SelectTrigger><SelectValue placeholder="Select wallet" /></SelectTrigger>
                     <SelectContent>
-                      {accounts.map(a => (
-                        <SelectItem key={a.id} value={a.id}>
-                          {a.name} — {a.currency} {a.balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      {wallets.map(w => (
+                        <SelectItem key={w.id} value={w.id}>
+                          {w.symbol} {w.currency} — {w.balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                  {fromAccountId && (() => {
-                    const acct = accounts.find(a => a.id === fromAccountId)
-                    return acct ? (
+                  {fromWalletId && (() => {
+                    const w = wallets.find(w => w.id === fromWalletId)
+                    return w ? (
                       <p className="text-xs text-muted-foreground flex items-center gap-1">
                         <Wallet className="h-3 w-3" />
-                        Available: {acct.currency} {acct.balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        Available: {w.currency} {w.balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                       </p>
                     ) : null
                   })()}
                 </div>
+
                 <div className="flex flex-col gap-1.5">
                   <Label>Amount</Label>
                   <Input
@@ -760,6 +884,52 @@ export default function CardsPage() {
                     onChange={e => setLoadAmount(e.target.value)}
                   />
                 </div>
+
+                {/* FX conversion preview */}
+                {convertedPreview && (() => {
+                  const wallet = wallets.find(w => w.id === fromWalletId)
+                  return wallet ? (
+                    <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2.5">
+                      <RefreshCw className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <p className="text-xs text-muted-foreground">
+                        <span className="font-medium text-foreground">
+                          {wallet.currency} {parseFloat(loadAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </span>
+                        {" "}→{" "}
+                        <span className="font-medium text-foreground">
+                          {selectedCard?.currency} {convertedPreview.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </span>
+                        <span className="ml-1.5 text-muted-foreground">
+                          @ {convertedPreview.rate.toFixed(4)}
+                        </span>
+                      </p>
+                    </div>
+                  ) : null
+                })()}
+
+                {/* No FX rate warning */}
+                {(() => {
+                  const wallet = wallets.find(w => w.id === fromWalletId)
+                  const amt = parseFloat(loadAmount)
+                  const isFirstLoad = !selectedCard?.currency || selectedCard.currency === ""
+                  if (
+                    wallet &&
+                    selectedCard?.currency &&
+                    !isFirstLoad &&
+                    wallet.currency !== selectedCard.currency &&
+                    !isNaN(amt) && amt > 0 &&
+                    convertedPreview === null
+                  ) {
+                    return (
+                      <p className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                        <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                        No FX rate available for {wallet.currency} → {selectedCard.currency}. Load from a matching wallet or contact support.
+                      </p>
+                    )
+                  }
+                  return null
+                })()}
+
                 {loadError && (
                   <p className="flex items-center gap-1.5 text-sm text-destructive">
                     <AlertCircle className="h-4 w-4" /> {loadError}

@@ -52,6 +52,9 @@ interface Transaction {
   status: TxStatus
   reference: string | null
   createdAt: string
+  // populated from the joined transfers row (if any)
+  transferType: "internal" | "swift" | "wire" | "scheduled" | null
+  fromAccountId: string | null
 }
 
 interface UserOption {
@@ -60,12 +63,23 @@ interface UserOption {
   email: string | null
 }
 
+interface AccountOption {
+  id: string
+  name: string
+  currency: string
+  balance: number
+}
+
 interface WalletOption {
   id: string
   currency: string
   symbol: string
   balance: number
 }
+
+type DepositMode = "deposit" | "deduct"
+type DeductTarget = "account" | "wallet"
+
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -103,19 +117,27 @@ interface CashDepositModalProps {
 function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
   const supabase = createClient()
 
+  // ── mode & target ──────────────────────────────────────────────────────────
+  const [mode, setMode] = useState<DepositMode>("deposit")
+  const [deductTarget, setDeductTarget] = useState<DeductTarget>("account")
+
+  // ── shared state ───────────────────────────────────────────────────────────
   const [users, setUsers] = useState<UserOption[]>([])
+  const [accounts, setAccounts] = useState<AccountOption[]>([])
   const [wallets, setWallets] = useState<WalletOption[]>([])
   const [loadingUsers, setLoadingUsers] = useState(false)
-  const [loadingWallets, setLoadingWallets] = useState(false)
+  const [loadingTargets, setLoadingTargets] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const [selectedUserId, setSelectedUserId] = useState("")
+  const [selectedAccountId, setSelectedAccountId] = useState("")
   const [selectedWalletId, setSelectedWalletId] = useState("")
   const [amount, setAmount] = useState("")
   const [reference, setReference] = useState("")
   const [userSearch, setUserSearch] = useState("")
 
+  // ── load users on open ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!open) return
     setLoadingUsers(true)
@@ -138,25 +160,55 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
       })
   }, [open])
 
+  // ── load accounts + wallets when user selected ────────────────────────────
   useEffect(() => {
     if (!selectedUserId) {
+      setAccounts([])
       setWallets([])
+      setSelectedAccountId("")
       setSelectedWalletId("")
       return
     }
-    setLoadingWallets(true)
-    supabase
-      .from("wallets")
-      .select("id, currency, symbol, balance")
-      .eq("user_id", selectedUserId)
-      .then(({ data }) => {
-        setWallets(data ?? [])
-        setSelectedWalletId("")
-        setLoadingWallets(false)
-      })
+    setLoadingTargets(true)
+    Promise.all([
+      supabase
+        .from("accounts")
+        .select("id, name, currency, balance")
+        .eq("user_id", selectedUserId)
+        .eq("is_active", true)
+        .order("name"),
+      supabase
+        .from("wallets")
+        .select("id, currency, symbol, balance")
+        .eq("user_id", selectedUserId)
+        .order("currency"),
+    ]).then(([accRes, walRes]) => {
+      setAccounts(accRes.data ?? [])
+      setWallets(walRes.data ?? [])
+      setSelectedAccountId("")
+      setSelectedWalletId("")
+      setLoadingTargets(false)
+    })
   }, [selectedUserId])
 
-  const selectedWallet = wallets.find((w) => w.id === selectedWalletId)
+  const selectedAccount = accounts.find((a) => a.id === selectedAccountId)
+  const selectedWallet  = wallets.find((w) => w.id === selectedWalletId)
+
+  // For the "New balance" preview
+  const previewBalance = (() => {
+    const amt = parseFloat(amount)
+    if (isNaN(amt)) return null
+    if (mode === "deposit" || deductTarget === "account") {
+      if (!selectedAccount) return null
+      const next = mode === "deposit" ? selectedAccount.balance + amt : selectedAccount.balance - amt
+      return { value: next, currency: selectedAccount.currency }
+    } else {
+      if (!selectedWallet) return null
+      const next = selectedWallet.balance - amt
+      return { value: next, currency: selectedWallet.currency }
+    }
+  })()
+
   const filteredUsers = users.filter(
     (u) =>
       u.name.toLowerCase().includes(userSearch.toLowerCase()) ||
@@ -164,17 +216,24 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
   )
 
   function reset() {
+    setMode("deposit")
+    setDeductTarget("account")
     setSelectedUserId("")
+    setSelectedAccountId("")
     setSelectedWalletId("")
     setAmount("")
     setReference("")
     setUserSearch("")
     setError(null)
+    setAccounts([])
     setWallets([])
   }
 
   async function handleSubmit() {
-    if (!selectedUserId || !selectedWalletId || !amount) {
+    const needsAccount = mode === "deposit" || deductTarget === "account"
+    const needsWallet  = mode === "deduct" && deductTarget === "wallet"
+
+    if (!selectedUserId || (!selectedAccountId && needsAccount) || (!selectedWalletId && needsWallet) || !amount) {
       setError("Please fill in all required fields.")
       return
     }
@@ -185,7 +244,17 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
       return
     }
 
-    if (!selectedWallet) return
+    // Client-side insufficient funds check for deductions
+    if (mode === "deduct") {
+      if (deductTarget === "account" && selectedAccount && parsedAmount > selectedAccount.balance) {
+        setError(`Insufficient account balance. Available: ${formatCurrency(selectedAccount.balance, selectedAccount.currency)}`)
+        return
+      }
+      if (deductTarget === "wallet" && selectedWallet && parsedAmount > selectedWallet.balance) {
+        setError(`Insufficient wallet balance. Available: ${selectedWallet.symbol}${selectedWallet.balance.toLocaleString()} ${selectedWallet.currency}`)
+        return
+      }
+    }
 
     setSubmitting(true)
     setError(null)
@@ -202,65 +271,149 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
         .join(" ") || "Admin"
 
     const selectedUser = users.find((u) => u.id === selectedUserId)!
-    const ref = reference.trim() || `CASH-DEP-${Date.now()}`
+    const ref = reference.trim() || `${mode === "deposit" ? "CASH-DEP" : "CASH-DED"}-${Date.now()}`
 
-    const { error: txErr } = await supabase.from("transactions").insert({
-      user_id: selectedUserId,
-      type: "credit",
-      description: `Cash Deposit — ${selectedWallet.currency}`,
-      amount: parsedAmount,
-      currency: selectedWallet.currency,
-      status: "completed",
-      reference: ref,
-    })
+    if (mode === "deposit") {
+      // ── Deposit → account ────────────────────────────────────────────────
+      const { error: depositErr } = await supabase.rpc("admin_cash_deposit", {
+        p_account_id: selectedAccountId,
+        p_user_id:    selectedUserId,
+        p_amount:     parsedAmount,
+        p_reference:  ref,
+      })
+      if (depositErr) {
+        setError(`Deposit failed: ${depositErr.message}`)
+        setSubmitting(false)
+        return
+      }
+      await supabase.from("audit_logs").insert({
+        action: `Cash deposit of ${formatCurrency(parsedAmount, selectedAccount!.currency)} into account "${selectedAccount!.name}". Ref: ${ref}`,
+        target_user_id: selectedUserId,
+        target_user_name: selectedUser.name,
+        admin_name: adminName,
+        log_type: "transaction",
+      })
+      await supabase.from("notifications").insert({
+        user_id: selectedUserId,
+        title: "Cash Deposit Received",
+        message: `${formatCurrency(parsedAmount, selectedAccount!.currency)} has been deposited into your account "${selectedAccount!.name}". Reference: ${ref}`,
+        type: "transfer",
+      })
+    } else {
+      // ── Deduct → account or wallet ───────────────────────────────────────
+      const { error: deductErr } = await supabase.rpc("admin_cash_deduct", {
+        p_target:     deductTarget,
+        p_account_id: deductTarget === "account" ? selectedAccountId : null,
+        p_wallet_id:  deductTarget === "wallet"  ? selectedWalletId  : null,
+        p_user_id:    selectedUserId,
+        p_amount:     parsedAmount,
+        p_reference:  ref,
+      })
+      if (deductErr) {
+        setError(`Deduction failed: ${deductErr.message}`)
+        setSubmitting(false)
+        return
+      }
+      const targetLabel =
+        deductTarget === "account"
+          ? `account "${selectedAccount!.name}"`
+          : `${selectedWallet!.currency} wallet`
+      const currency =
+        deductTarget === "account" ? selectedAccount!.currency : selectedWallet!.currency
 
-    if (txErr) {
-      setError(`Failed to create transaction: ${txErr.message}`)
-      setSubmitting(false)
-      return
+      await supabase.from("audit_logs").insert({
+        action: `Cash deduction of ${formatCurrency(parsedAmount, currency)} from ${targetLabel}. Ref: ${ref}`,
+        target_user_id: selectedUserId,
+        target_user_name: selectedUser.name,
+        admin_name: adminName,
+        log_type: "transaction",
+      })
+      await supabase.from("notifications").insert({
+        user_id: selectedUserId,
+        title: "Account Adjustment",
+        message: `${formatCurrency(parsedAmount, currency)} has been deducted from your ${targetLabel}. Reference: ${ref}`,
+        type: "transfer",
+      })
     }
-
-    const { error: walletErr } = await supabase
-      .from("wallets")
-      .update({ balance: selectedWallet.balance + parsedAmount })
-      .eq("id", selectedWalletId)
-
-    if (walletErr) {
-      setError(`Transaction created but wallet update failed: ${walletErr.message}`)
-      setSubmitting(false)
-      return
-    }
-
-    await supabase.from("audit_logs").insert({
-      action: `Cash deposit of ${formatCurrency(parsedAmount, selectedWallet.currency)} into ${selectedWallet.currency} wallet. Ref: ${ref}`,
-      target_user_id: selectedUserId,
-      target_user_name: selectedUser.name,
-      admin_name: adminName,
-      log_type: "transaction",
-    })
-
-    await supabase.from("notifications").insert({
-      user_id: selectedUserId,
-      title: "Cash Deposit Received",
-      message: `${formatCurrency(parsedAmount, selectedWallet.currency)} has been deposited into your ${selectedWallet.currency} wallet. Reference: ${ref}`,
-      type: "transfer",
-    })
 
     setSubmitting(false)
     reset()
     onSuccess()
   }
 
+  const isDeposit = mode === "deposit"
+  const showAccountPicker = isDeposit || deductTarget === "account"
+  const showWalletPicker  = !isDeposit && deductTarget === "wallet"
+
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) { reset(); onClose() } }}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="font-serif text-lg">
-            Record Cash Deposit
+            {isDeposit ? "Record Cash Deposit" : "Record Cash Deduction"}
           </DialogTitle>
         </DialogHeader>
 
         <div className="flex flex-col gap-4 py-2">
+
+          {/* ── Mode toggle ── */}
+          <div className="flex rounded-lg border border-border overflow-hidden text-xs font-medium">
+            <button
+              type="button"
+              onClick={() => setMode("deposit")}
+              className={`flex-1 py-2 transition-colors ${
+                isDeposit
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-background text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              + Deposit
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("deduct")}
+              className={`flex-1 py-2 transition-colors ${
+                !isDeposit
+                  ? "bg-destructive text-destructive-foreground"
+                  : "bg-background text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              − Deduct
+            </button>
+          </div>
+
+          {/* ── Deduct target (account vs wallet) ── */}
+          {!isDeposit && (
+            <div className="flex flex-col gap-1.5">
+              <Label className="text-xs">Deduct From</Label>
+              <div className="flex rounded-lg border border-border overflow-hidden text-xs font-medium">
+                <button
+                  type="button"
+                  onClick={() => setDeductTarget("account")}
+                  className={`flex-1 py-2 transition-colors ${
+                    deductTarget === "account"
+                      ? "bg-muted text-foreground font-semibold"
+                      : "bg-background text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  Account
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDeductTarget("wallet")}
+                  className={`flex-1 py-2 transition-colors ${
+                    deductTarget === "wallet"
+                      ? "bg-muted text-foreground font-semibold"
+                      : "bg-background text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  Wallet
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ── Customer ── */}
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs">
               Customer <span className="text-destructive">*</span>
@@ -307,88 +460,133 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
             )}
           </div>
 
-          <div className="flex flex-col gap-1.5">
-            <Label className="text-xs">
-              Deposit Into Wallet <span className="text-destructive">*</span>
-            </Label>
-            {loadingWallets ? (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Loader2 className="h-3 w-3 animate-spin" /> Loading wallets…
-              </div>
-            ) : (
-              <Select
-                value={selectedWalletId}
-                onValueChange={setSelectedWalletId}
-                disabled={!selectedUserId || wallets.length === 0}
-              >
-                <SelectTrigger>
-                  <SelectValue
-                    placeholder={
-                      !selectedUserId
-                        ? "Select a customer first"
-                        : wallets.length === 0
-                        ? "No wallets found"
-                        : "Select wallet"
-                    }
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  {wallets.map((w) => (
-                    <SelectItem key={w.id} value={w.id}>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono font-medium">
-                          {w.symbol} {w.currency}
-                        </span>
-                        <span className="text-xs text-muted-foreground">
-                          Current: {formatCurrency(w.balance, w.currency)}
-                        </span>
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          </div>
+          {/* ── Account picker ── */}
+          {showAccountPicker && (
+            <div className="flex flex-col gap-1.5">
+              <Label className="text-xs">
+                {isDeposit ? "Deposit Into Account" : "Deduct From Account"}{" "}
+                <span className="text-destructive">*</span>
+              </Label>
+              {loadingTargets ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" /> Loading accounts…
+                </div>
+              ) : (
+                <Select
+                  value={selectedAccountId}
+                  onValueChange={setSelectedAccountId}
+                  disabled={!selectedUserId || accounts.length === 0}
+                >
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={
+                        !selectedUserId
+                          ? "Select a customer first"
+                          : accounts.length === 0
+                          ? "No accounts found"
+                          : "Select account"
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {accounts.map((a) => (
+                      <SelectItem key={a.id} value={a.id}>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{a.name}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {a.currency} — {formatCurrency(a.balance, a.currency)}
+                          </span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+          )}
 
+          {/* ── Wallet picker ── */}
+          {showWalletPicker && (
+            <div className="flex flex-col gap-1.5">
+              <Label className="text-xs">
+                Deduct From Wallet <span className="text-destructive">*</span>
+              </Label>
+              {loadingTargets ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" /> Loading wallets…
+                </div>
+              ) : (
+                <Select
+                  value={selectedWalletId}
+                  onValueChange={setSelectedWalletId}
+                  disabled={!selectedUserId || wallets.length === 0}
+                >
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={
+                        !selectedUserId
+                          ? "Select a customer first"
+                          : wallets.length === 0
+                          ? "No wallets found"
+                          : "Select wallet"
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {wallets.map((w) => (
+                      <SelectItem key={w.id} value={w.id}>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono font-medium">
+                            {w.symbol} {w.currency}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            {formatCurrency(w.balance, w.currency)}
+                          </span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+          )}
+
+          {/* ── Amount ── */}
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs">
-              Amount ({selectedWallet?.currency ?? "—"}){" "}
+              Amount{" "}
+              <span className="text-muted-foreground">
+                ({showAccountPicker ? (selectedAccount?.currency ?? "—") : (selectedWallet?.currency ?? "—")})
+              </span>{" "}
               <span className="text-destructive">*</span>
             </Label>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
-                {selectedWallet?.symbol ?? "$"}
-              </span>
-              <Input
-                type="number"
-                min="0"
-                step="0.01"
-                placeholder="0.00"
-                className="pl-8"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-              />
-            </div>
-            {selectedWallet && amount && !isNaN(parseFloat(amount)) && (
-              <p className="text-xs text-muted-foreground">
+            <Input
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="0.00"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+            />
+            {previewBalance !== null && amount && !isNaN(parseFloat(amount)) && (
+              <p className={`text-xs ${previewBalance.value < 0 ? "text-destructive" : "text-muted-foreground"}`}>
                 New balance:{" "}
                 <span className="font-medium text-foreground">
-                  {formatCurrency(
-                    selectedWallet.balance + parseFloat(amount),
-                    selectedWallet.currency
-                  )}
+                  {formatCurrency(previewBalance.value, previewBalance.currency)}
                 </span>
+                {previewBalance.value < 0 && " — will go negative"}
               </p>
             )}
           </div>
 
+          {/* ── Reference ── */}
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs">
               Reference{" "}
               <span className="text-muted-foreground">(auto-generated if blank)</span>
             </Label>
             <Input
-              placeholder="e.g. CASH-DEP-2026-001"
+              placeholder={isDeposit ? "e.g. CASH-DEP-2026-001" : "e.g. CASH-DED-2026-001"}
               value={reference}
               onChange={(e) => setReference(e.target.value)}
             />
@@ -412,11 +610,20 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
           </Button>
           <Button
             onClick={handleSubmit}
-            disabled={submitting || !selectedUserId || !selectedWalletId || !amount}
+            disabled={
+              submitting ||
+              !selectedUserId ||
+              (showAccountPicker && !selectedAccountId) ||
+              (showWalletPicker && !selectedWalletId) ||
+              !amount
+            }
+            variant={isDeposit ? "default" : "destructive"}
             className="gap-2"
           >
             {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-            {submitting ? "Processing…" : "Record Deposit"}
+            {submitting
+              ? isDeposit ? "Processing…" : "Deducting…"
+              : isDeposit ? "Record Deposit" : "Record Deduction"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -440,42 +647,63 @@ export default function AdminTransactionsPage() {
   const [processingId, setProcessingId] = useState<string | null>(null)
 
   // -------------------------------------------------------------------------
-  // Fetch
+  // Fetch — join transfers to get transfer_type + from_account_id
   // -------------------------------------------------------------------------
 
   async function fetchTransactions() {
     setLoading(true)
     setError(null)
 
-    const { data, error: err } = await supabase
-      .from("transactions")
-      .select(`
-        id,
-        user_id,
-        type,
-        description,
-        amount,
-        currency,
-        status,
-        reference,
-        created_at,
-        profiles (
-          first_name,
-          last_name
-        )
-      `)
-      .order("created_at", { ascending: false })
-      .limit(200)
+    // Fetch transactions and transfers separately — there is no FK between them.
+    // We match them by reference field after the fact.
+    const [txRes, trRes] = await Promise.all([
+      supabase
+        .from("transactions")
+        .select(`
+          id,
+          user_id,
+          type,
+          description,
+          amount,
+          currency,
+          status,
+          reference,
+          created_at,
+          profiles (
+            first_name,
+            last_name
+          )
+        `)
+        .order("created_at", { ascending: false })
+        .limit(200),
+      supabase
+        .from("transfers")
+        .select("reference, transfer_type, from_account_id")
+        .limit(500),
+    ])
 
-    if (err) {
+    if (txRes.error) {
       setError("Failed to load transactions.")
       setLoading(false)
       return
     }
 
+    // Build a lookup map: reference → transfer metadata
+    const transferMap = new Map<string, { transferType: string; fromAccountId: string | null }>()
+    for (const t of trRes.data ?? []) {
+      if (t.reference) {
+        transferMap.set(t.reference, {
+          transferType: t.transfer_type,
+          fromAccountId: t.from_account_id ?? null,
+        })
+      }
+    }
+
     setTransactions(
-      (data ?? []).map((tx) => {
+      (txRes.data ?? []).map((tx: any) => {
         const profile = Array.isArray(tx.profiles) ? tx.profiles[0] : tx.profiles
+        const transfer = tx.reference ? transferMap.get(tx.reference) : undefined
+
         return {
           id: tx.id,
           userId: tx.user_id,
@@ -489,6 +717,8 @@ export default function AdminTransactionsPage() {
           status: tx.status as TxStatus,
           reference: tx.reference,
           createdAt: tx.created_at,
+          transferType: (transfer?.transferType ?? null) as Transaction["transferType"],
+          fromAccountId: transfer?.fromAccountId ?? null,
         }
       })
     )
@@ -518,30 +748,24 @@ export default function AdminTransactionsPage() {
 
   // -------------------------------------------------------------------------
   // Action: Complete pending transaction
-  // Applies the balance change that was held in "pending" state.
+  //
+  // • Internal (transfer_type === "internal"):
+  //     The RPC already deducted from the account and credited the wallet
+  //     when the transfer was submitted. "Complete" here just marks it done —
+  //     no further balance movement needed.
+  //
+  // • SWIFT / Wire / Scheduled:
+  //     The RPC deducted from the wallet on submission. The wallet balance
+  //     is already reduced. "Complete" marks it done — no further movement.
+  //     (If you prefer to hold funds as "pending" without deducting, flip
+  //     the delta logic below and adjust the RPC accordingly.)
   // -------------------------------------------------------------------------
 
   async function completeTransaction(tx: Transaction) {
     setProcessingId(tx.id)
     const adminName = await getAdminName()
 
-    // Fetch the user's wallet for this currency
-    const { data: walletData } = await supabase
-      .from("wallets")
-      .select("id, balance")
-      .eq("user_id", tx.userId)
-      .eq("currency", tx.currency)
-      .single()
-
-    if (walletData) {
-      const delta = tx.type === "credit" ? tx.amount : -tx.amount
-      await supabase
-        .from("wallets")
-        .update({ balance: walletData.balance + delta })
-        .eq("id", walletData.id)
-    }
-
-    // Mark transaction completed
+    // Mark transaction completed — balance was already settled by the RPC
     await supabase
       .from("transactions")
       .update({ status: "completed" })
@@ -570,40 +794,69 @@ export default function AdminTransactionsPage() {
 
   // -------------------------------------------------------------------------
   // Action: Decline pending transaction
-  // Cancels without applying balance change. If it was a debit that already
-  // had funds held (i.e. balance was already debited on creation), revert it.
-  // Convention: pending debits have already reduced the balance → revert.
-  // Pending credits have NOT yet added funds → no revert needed.
+  //
+  // The RPC always deducts on submission (funds are "held").
+  // Declining must revert those funds back to the correct place:
+  //
+  // • Internal debit → revert to the SOURCE ACCOUNT (from_account_id)
+  // • SWIFT / Wire / Scheduled debit → revert to the SOURCE WALLET
+  //   but ONLY if that wallet's current balance >= 0 (don't go negative).
+  // • Any credit (pending incoming) → no balance was added yet, just cancel.
   // -------------------------------------------------------------------------
 
   async function declineTransaction(tx: Transaction) {
     setProcessingId(tx.id)
     const adminName = await getAdminName()
 
-    // Revert wallet only for pending debits (funds were held/already deducted)
     if (tx.type === "debit") {
-      const { data: walletData } = await supabase
-        .from("wallets")
-        .select("id, balance")
-        .eq("user_id", tx.userId)
-        .eq("currency", tx.currency)
-        .single()
+      if (tx.transferType === "internal" && tx.fromAccountId) {
+        // ── Revert to account ──────────────────────────────────────────────
+        const { data: accountData } = await supabase
+          .from("accounts")
+          .select("id, balance")
+          .eq("id", tx.fromAccountId)
+          .single()
 
-      if (walletData) {
-        await supabase
+        if (accountData) {
+          await supabase
+            .from("accounts")
+            .update({ balance: accountData.balance + tx.amount })
+            .eq("id", accountData.id)
+        }
+      } else {
+        // ── Revert to wallet (swift / wire / scheduled) ────────────────────
+        // Only revert if wallet balance is currently > 0
+        const { data: walletData } = await supabase
           .from("wallets")
-          .update({ balance: walletData.balance + tx.amount })
-          .eq("id", walletData.id)
+          .select("id, balance")
+          .eq("user_id", tx.userId)
+          .eq("currency", tx.currency)
+          .single()
+
+        if (walletData && walletData.balance >= 0) {
+          await supabase
+            .from("wallets")
+            .update({ balance: walletData.balance + tx.amount })
+            .eq("id", walletData.id)
+        }
       }
     }
+    // Credits: no balance was applied yet on submission → nothing to revert
 
     await supabase
       .from("transactions")
       .update({ status: "cancelled" })
       .eq("id", tx.id)
 
+    const revertNote =
+      tx.type === "debit"
+        ? tx.transferType === "internal"
+          ? " (account balance reverted)"
+          : " (wallet balance reverted)"
+        : ""
+
     await supabase.from("audit_logs").insert({
-      action: `Pending transaction declined${tx.type === "debit" ? " (balance reverted)" : ""}: ${tx.description} (${formatCurrency(tx.amount, tx.currency)})`,
+      action: `Pending transaction declined${revertNote}: ${tx.description} (${formatCurrency(tx.amount, tx.currency)})`,
       target_user_id: tx.userId,
       target_user_name: tx.userName,
       admin_name: adminName,
@@ -652,11 +905,46 @@ export default function AdminTransactionsPage() {
 
   // -------------------------------------------------------------------------
   // Action: Block flagged transaction
+  //
+  // Mirrors decline logic: revert funds to the correct source.
   // -------------------------------------------------------------------------
 
   async function blockTransaction(tx: Transaction) {
     setProcessingId(tx.id)
     const adminName = await getAdminName()
+
+    if (tx.type === "debit") {
+      if (tx.transferType === "internal" && tx.fromAccountId) {
+        // Revert to account
+        const { data: accountData } = await supabase
+          .from("accounts")
+          .select("id, balance")
+          .eq("id", tx.fromAccountId)
+          .single()
+
+        if (accountData) {
+          await supabase
+            .from("accounts")
+            .update({ balance: accountData.balance + tx.amount })
+            .eq("id", accountData.id)
+        }
+      } else {
+        // Revert to wallet — only if balance > 0
+        const { data: walletData } = await supabase
+          .from("wallets")
+          .select("id, balance")
+          .eq("user_id", tx.userId)
+          .eq("currency", tx.currency)
+          .single()
+
+        if (walletData && walletData.balance >= 0) {
+          await supabase
+            .from("wallets")
+            .update({ balance: walletData.balance + tx.amount })
+            .eq("id", walletData.id)
+        }
+      }
+    }
 
     await supabase
       .from("transactions")
@@ -871,9 +1159,16 @@ export default function AdminTransactionsPage() {
                                 <ArrowUpRight className="h-3 w-3" />
                               )}
                             </div>
-                            <span className="font-medium text-foreground">
-                              {tx.description}
-                            </span>
+                            <div className="flex flex-col">
+                              <span className="font-medium text-foreground">
+                                {tx.description}
+                              </span>
+                              {tx.transferType && (
+                                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                                  {tx.transferType}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </td>
                         <td
