@@ -21,7 +21,7 @@ const links = [
   { href: "/admin/users", label: "Users", icon: Users },
   { href: "/admin/kyc", label: "KYC Review", icon: Shield },
   { href: "/admin/transactions", label: "Transactions", icon: ArrowRightLeft },
-  { href: "/admin/fx-rates", label: "FX Rates", icon: DollarSign },
+  { href: "/admin/fx-rates", label: "Statments", icon: DollarSign },
   { href: "/admin/fees", label: "Fees & Limits", icon: Receipt },
   { href: "/admin/logs", label: "Audit Logs", icon: ScrollText },
 ]

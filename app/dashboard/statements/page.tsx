@@ -153,7 +153,7 @@ export default function StatementsPage() {
     setDownloadingId(stmt.id)
 
     const { data, error } = await supabase.storage
-      .from("statements")
+      .from("statement-documents")
       .createSignedUrl(stmt.file_path, 60) // 60-second expiry
 
     if (error || !data?.signedUrl) {
