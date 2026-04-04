@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { createBrowserClient } from "@supabase/ssr"
+import { useRouter } from "next/navigation"
 
 interface Wallet {
   id: string
@@ -53,7 +54,7 @@ export default function WalletsPage() {
   const [fromCurrency, setFromCurrency] = useState("")
   const [toCurrency, setToCurrency] = useState("")
   const [amount, setAmount] = useState("")
-
+  const router = useRouter()
   useEffect(() => {
     const supabase = createBrowserClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -241,12 +242,14 @@ export default function WalletsPage() {
                   {formatCurrency(wallet.balance, wallet.currency)}
                 </p>
                 <div className="mt-4 flex gap-2">
-                  <Button variant="outline" size="sm" className="flex-1">
-                    Send
-                  </Button>
-                  <Button variant="outline" size="sm" className="flex-1">
-                    Receive
-                  </Button>
+                <Button variant="outline" size="sm" className="flex-1"
+                  onClick={() => router.push("/dashboard/transfers")}>
+                  Send
+                </Button>
+                <Button variant="outline" size="sm" className="flex-1"
+                  onClick={() => router.push("/dashboard/accounts")}>
+                  Receive
+                </Button>
                 </div>
               </CardContent>
             </Card>
