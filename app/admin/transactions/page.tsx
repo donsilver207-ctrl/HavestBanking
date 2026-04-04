@@ -13,6 +13,8 @@ import {
   X,
   Clock,
   Ban,
+  FileImage,
+  ExternalLink,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -52,7 +54,6 @@ interface Transaction {
   status: TxStatus
   reference: string | null
   createdAt: string
-  // populated from the joined transfers row (if any)
   transferType: "internal" | "swift" | "wire" | "scheduled" | null
   fromAccountId: string | null
 }
@@ -80,7 +81,6 @@ interface WalletOption {
 type DepositMode = "deposit" | "deduct"
 type DeductTarget = "account" | "wallet"
 
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -104,6 +104,210 @@ function formatDate(iso: string) {
   })
 }
 
+/** Returns true if the description suggests a check deposit or loan application */
+function isCheckOrLoan(description: string): boolean {
+  const d = description.toLowerCase()
+  return d.includes("check deposit") || d.includes("mobile check") || d.includes("loan")
+}
+
+/**
+ * Extracts storage paths from a reference string.
+ * Handles:
+ *  - plain string:  "checks/uuid/check_123.jpeg"
+ *  - JSON array:    ["collaterals/uuid/collateral_123.png", ...]
+ * Returns only entries that look like image paths.
+ */
+function extractImagePaths(reference: string | null): string[] {
+  if (!reference) return []
+
+  const imageExtensions = /\.(jpe?g|png|gif|webp|bmp|tiff?|heic|avif)$/i
+
+  // Try JSON array first
+  if (reference.trim().startsWith("[")) {
+    try {
+      const parsed = JSON.parse(reference)
+      if (Array.isArray(parsed)) {
+        return parsed.filter((p): p is string => typeof p === "string" && imageExtensions.test(p))
+      }
+    } catch {
+      // fall through
+    }
+  }
+
+  // Plain string
+  if (imageExtensions.test(reference.trim())) {
+    return [reference.trim()]
+  }
+
+  return []
+}
+
+// ---------------------------------------------------------------------------
+// Image Lightbox
+// ---------------------------------------------------------------------------
+
+interface LightboxProps {
+  urls: string[]
+  onClose: () => void
+}
+
+function ImageLightbox({ urls, onClose }: LightboxProps) {
+  const [current, setCurrent] = useState(0)
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose()
+      if (e.key === "ArrowRight") setCurrent((c) => Math.min(c + 1, urls.length - 1))
+      if (e.key === "ArrowLeft") setCurrent((c) => Math.max(c - 1, 0))
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [urls.length, onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="relative flex max-h-[90vh] max-w-4xl flex-col gap-3 rounded-xl bg-background p-4 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between gap-4">
+          <p className="text-sm font-medium text-foreground">
+            {urls.length > 1 ? `Document ${current + 1} of ${urls.length}` : "Document Preview"}
+          </p>
+          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        {/* Image */}
+        <img
+          src={urls[current]}
+          alt={`Document ${current + 1}`}
+          className="max-h-[70vh] w-auto rounded-lg object-contain border border-border"
+        />
+
+        {/* Navigation */}
+        {urls.length > 1 && (
+          <div className="flex items-center justify-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={current === 0}
+              onClick={() => setCurrent((c) => c - 1)}
+            >
+              ← Prev
+            </Button>
+            <div className="flex gap-1.5">
+              {urls.map((_, i) => (
+                <button
+                  key={i}
+                  onClick={() => setCurrent(i)}
+                  className={`h-2 w-2 rounded-full transition-colors ${
+                    i === current ? "bg-primary" : "bg-muted-foreground/30"
+                  }`}
+                />
+              ))}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={current === urls.length - 1}
+              onClick={() => setCurrent((c) => c + 1)}
+            >
+              Next →
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Reference Cell — shows image trigger for check/loan rows
+// ---------------------------------------------------------------------------
+
+interface ReferenceCellProps {
+  tx: Transaction
+  supabase: ReturnType<typeof createClient>
+}
+
+function ReferenceCell({ tx, supabase }: ReferenceCellProps) {
+  const [signedUrls, setSignedUrls] = useState<string[]>([])
+  const [lightboxOpen, setLightboxOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+
+  const imagePaths = isCheckOrLoan(tx.description) ? extractImagePaths(tx.reference) : []
+  const hasImages = imagePaths.length > 0
+
+  async function openLightbox() {
+    if (signedUrls.length > 0) {
+      setLightboxOpen(true)
+      return
+    }
+    setLoading(true)
+    const urls: string[] = []
+    for (const path of imagePaths) {
+      const { data } = await supabase.storage
+        .from("statement-documents")
+        .createSignedUrl(path, 60 * 60) // 1-hour signed URL
+      if (data?.signedUrl) urls.push(data.signedUrl)
+    }
+    setSignedUrls(urls)
+    setLoading(false)
+    if (urls.length > 0) setLightboxOpen(true)
+  }
+
+  return (
+    <>
+      <div className="flex flex-col gap-1">
+        {/* Plain reference text */}
+        {tx.reference && !hasImages && (
+          <span className="font-mono text-xs text-muted-foreground">
+            {tx.reference.length > 30 ? `${tx.reference.slice(0, 30)}…` : tx.reference}
+          </span>
+        )}
+
+        {/* Image trigger button */}
+        {hasImages && (
+          <button
+            onClick={openLightbox}
+            disabled={loading}
+            className="flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/5 px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/10 disabled:opacity-60"
+          >
+            {loading ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <FileImage className="h-3 w-3" />
+            )}
+            {imagePaths.length === 1 ? "View Document" : `View ${imagePaths.length} Documents`}
+            <ExternalLink className="h-2.5 w-2.5 opacity-60" />
+          </button>
+        )}
+
+        {/* Show truncated path as secondary label */}
+        {hasImages && (
+          <span className="font-mono text-[10px] text-muted-foreground/60">
+            {imagePaths[0].split("/").pop()}
+            {imagePaths.length > 1 && ` +${imagePaths.length - 1} more`}
+          </span>
+        )}
+
+        {/* No reference */}
+        {!tx.reference && <span className="text-xs text-muted-foreground">—</span>}
+      </div>
+
+      {lightboxOpen && signedUrls.length > 0 && (
+        <ImageLightbox urls={signedUrls} onClose={() => setLightboxOpen(false)} />
+      )}
+    </>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Cash Deposit Modal
 // ---------------------------------------------------------------------------
@@ -117,11 +321,8 @@ interface CashDepositModalProps {
 function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
   const supabase = createClient()
 
-  // ── mode & target ──────────────────────────────────────────────────────────
   const [mode, setMode] = useState<DepositMode>("deposit")
   const [deductTarget, setDeductTarget] = useState<DeductTarget>("account")
-
-  // ── shared state ───────────────────────────────────────────────────────────
   const [users, setUsers] = useState<UserOption[]>([])
   const [accounts, setAccounts] = useState<AccountOption[]>([])
   const [wallets, setWallets] = useState<WalletOption[]>([])
@@ -129,7 +330,6 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
   const [loadingTargets, setLoadingTargets] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
   const [selectedUserId, setSelectedUserId] = useState("")
   const [selectedAccountId, setSelectedAccountId] = useState("")
   const [selectedWalletId, setSelectedWalletId] = useState("")
@@ -137,7 +337,6 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
   const [reference, setReference] = useState("")
   const [userSearch, setUserSearch] = useState("")
 
-  // ── load users on open ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!open) return
     setLoadingUsers(true)
@@ -149,10 +348,7 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
         setUsers(
           (data ?? []).map((p) => ({
             id: p.id,
-            name:
-              [p.first_name, p.last_name].filter(Boolean).join(" ") ||
-              p.email ||
-              "Unknown",
+            name: [p.first_name, p.last_name].filter(Boolean).join(" ") || p.email || "Unknown",
             email: p.email,
           }))
         )
@@ -160,7 +356,6 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
       })
   }, [open])
 
-  // ── load accounts + wallets when user selected ────────────────────────────
   useEffect(() => {
     if (!selectedUserId) {
       setAccounts([])
@@ -192,9 +387,8 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
   }, [selectedUserId])
 
   const selectedAccount = accounts.find((a) => a.id === selectedAccountId)
-  const selectedWallet  = wallets.find((w) => w.id === selectedWalletId)
+  const selectedWallet = wallets.find((w) => w.id === selectedWalletId)
 
-  // For the "New balance" preview
   const previewBalance = (() => {
     const amt = parseFloat(amount)
     if (isNaN(amt)) return null
@@ -204,8 +398,7 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
       return { value: next, currency: selectedAccount.currency }
     } else {
       if (!selectedWallet) return null
-      const next = selectedWallet.balance - amt
-      return { value: next, currency: selectedWallet.currency }
+      return { value: selectedWallet.balance - amt, currency: selectedWallet.currency }
     }
   })()
 
@@ -231,7 +424,7 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
 
   async function handleSubmit() {
     const needsAccount = mode === "deposit" || deductTarget === "account"
-    const needsWallet  = mode === "deduct" && deductTarget === "wallet"
+    const needsWallet = mode === "deduct" && deductTarget === "wallet"
 
     if (!selectedUserId || (!selectedAccountId && needsAccount) || (!selectedWalletId && needsWallet) || !amount) {
       setError("Please fill in all required fields.")
@@ -244,7 +437,6 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
       return
     }
 
-    // Client-side insufficient funds check for deductions
     if (mode === "deduct") {
       if (deductTarget === "account" && selectedAccount && parsedAmount > selectedAccount.balance) {
         setError(`Insufficient account balance. Available: ${formatCurrency(selectedAccount.balance, selectedAccount.currency)}`)
@@ -265,21 +457,16 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
       .select("first_name, last_name")
       .eq("id", adminUser!.id)
       .single()
-    const adminName =
-      [adminProfile?.first_name, adminProfile?.last_name]
-        .filter(Boolean)
-        .join(" ") || "Admin"
-
+    const adminName = [adminProfile?.first_name, adminProfile?.last_name].filter(Boolean).join(" ") || "Admin"
     const selectedUser = users.find((u) => u.id === selectedUserId)!
     const ref = reference.trim() || `${mode === "deposit" ? "CASH-DEP" : "CASH-DED"}-${Date.now()}`
 
     if (mode === "deposit") {
-      // ── Deposit → account ────────────────────────────────────────────────
       const { error: depositErr } = await supabase.rpc("admin_cash_deposit", {
         p_account_id: selectedAccountId,
-        p_user_id:    selectedUserId,
-        p_amount:     parsedAmount,
-        p_reference:  ref,
+        p_user_id: selectedUserId,
+        p_amount: parsedAmount,
+        p_reference: ref,
       })
       if (depositErr) {
         setError(`Deposit failed: ${depositErr.message}`)
@@ -300,27 +487,21 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
         type: "transfer",
       })
     } else {
-      // ── Deduct → account or wallet ───────────────────────────────────────
       const { error: deductErr } = await supabase.rpc("admin_cash_deduct", {
-        p_target:     deductTarget,
+        p_target: deductTarget,
         p_account_id: deductTarget === "account" ? selectedAccountId : null,
-        p_wallet_id:  deductTarget === "wallet"  ? selectedWalletId  : null,
-        p_user_id:    selectedUserId,
-        p_amount:     parsedAmount,
-        p_reference:  ref,
+        p_wallet_id: deductTarget === "wallet" ? selectedWalletId : null,
+        p_user_id: selectedUserId,
+        p_amount: parsedAmount,
+        p_reference: ref,
       })
       if (deductErr) {
         setError(`Deduction failed: ${deductErr.message}`)
         setSubmitting(false)
         return
       }
-      const targetLabel =
-        deductTarget === "account"
-          ? `account "${selectedAccount!.name}"`
-          : `${selectedWallet!.currency} wallet`
-      const currency =
-        deductTarget === "account" ? selectedAccount!.currency : selectedWallet!.currency
-
+      const targetLabel = deductTarget === "account" ? `account "${selectedAccount!.name}"` : `${selectedWallet!.currency} wallet`
+      const currency = deductTarget === "account" ? selectedAccount!.currency : selectedWallet!.currency
       await supabase.from("audit_logs").insert({
         action: `Cash deduction of ${formatCurrency(parsedAmount, currency)} from ${targetLabel}. Ref: ${ref}`,
         target_user_id: selectedUserId,
@@ -343,7 +524,7 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
 
   const isDeposit = mode === "deposit"
   const showAccountPicker = isDeposit || deductTarget === "account"
-  const showWalletPicker  = !isDeposit && deductTarget === "wallet"
+  const showWalletPicker = !isDeposit && deductTarget === "wallet"
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) { reset(); onClose() } }}>
@@ -355,147 +536,72 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
         </DialogHeader>
 
         <div className="flex flex-col gap-4 py-2">
-
-          {/* ── Mode toggle ── */}
           <div className="flex rounded-lg border border-border overflow-hidden text-xs font-medium">
-            <button
-              type="button"
-              onClick={() => setMode("deposit")}
-              className={`flex-1 py-2 transition-colors ${
-                isDeposit
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-background text-muted-foreground hover:bg-muted"
-              }`}
-            >
+            <button type="button" onClick={() => setMode("deposit")}
+              className={`flex-1 py-2 transition-colors ${isDeposit ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"}`}>
               + Deposit
             </button>
-            <button
-              type="button"
-              onClick={() => setMode("deduct")}
-              className={`flex-1 py-2 transition-colors ${
-                !isDeposit
-                  ? "bg-destructive text-destructive-foreground"
-                  : "bg-background text-muted-foreground hover:bg-muted"
-              }`}
-            >
+            <button type="button" onClick={() => setMode("deduct")}
+              className={`flex-1 py-2 transition-colors ${!isDeposit ? "bg-destructive text-destructive-foreground" : "bg-background text-muted-foreground hover:bg-muted"}`}>
               − Deduct
             </button>
           </div>
 
-          {/* ── Deduct target (account vs wallet) ── */}
           {!isDeposit && (
             <div className="flex flex-col gap-1.5">
               <Label className="text-xs">Deduct From</Label>
               <div className="flex rounded-lg border border-border overflow-hidden text-xs font-medium">
-                <button
-                  type="button"
-                  onClick={() => setDeductTarget("account")}
-                  className={`flex-1 py-2 transition-colors ${
-                    deductTarget === "account"
-                      ? "bg-muted text-foreground font-semibold"
-                      : "bg-background text-muted-foreground hover:bg-muted"
-                  }`}
-                >
+                <button type="button" onClick={() => setDeductTarget("account")}
+                  className={`flex-1 py-2 transition-colors ${deductTarget === "account" ? "bg-muted text-foreground font-semibold" : "bg-background text-muted-foreground hover:bg-muted"}`}>
                   Account
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setDeductTarget("wallet")}
-                  className={`flex-1 py-2 transition-colors ${
-                    deductTarget === "wallet"
-                      ? "bg-muted text-foreground font-semibold"
-                      : "bg-background text-muted-foreground hover:bg-muted"
-                  }`}
-                >
+                <button type="button" onClick={() => setDeductTarget("wallet")}
+                  className={`flex-1 py-2 transition-colors ${deductTarget === "wallet" ? "bg-muted text-foreground font-semibold" : "bg-background text-muted-foreground hover:bg-muted"}`}>
                   Wallet
                 </button>
               </div>
             </div>
           )}
 
-          {/* ── Customer ── */}
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs">
-              Customer <span className="text-destructive">*</span>
-            </Label>
-            <Input
-              placeholder="Search by name or email..."
-              value={userSearch}
-              onChange={(e) => setUserSearch(e.target.value)}
-              className="mb-1"
-            />
+            <Label className="text-xs">Customer <span className="text-destructive">*</span></Label>
+            <Input placeholder="Search by name or email..." value={userSearch} onChange={(e) => setUserSearch(e.target.value)} className="mb-1" />
             {loadingUsers ? (
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <Loader2 className="h-3 w-3 animate-spin" /> Loading users…
               </div>
             ) : (
-              <Select
-                value={selectedUserId}
-                onValueChange={(v) => {
-                  setSelectedUserId(v)
-                  setUserSearch(users.find((u) => u.id === v)?.name ?? "")
-                }}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select customer" />
-                </SelectTrigger>
+              <Select value={selectedUserId} onValueChange={(v) => { setSelectedUserId(v); setUserSearch(users.find((u) => u.id === v)?.name ?? "") }}>
+                <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
                 <SelectContent className="max-h-48">
                   {filteredUsers.map((u) => (
                     <SelectItem key={u.id} value={u.id}>
                       <span className="font-medium">{u.name}</span>
-                      {u.email && (
-                        <span className="ml-2 text-xs text-muted-foreground">
-                          {u.email}
-                        </span>
-                      )}
+                      {u.email && <span className="ml-2 text-xs text-muted-foreground">{u.email}</span>}
                     </SelectItem>
                   ))}
-                  {filteredUsers.length === 0 && (
-                    <div className="px-3 py-2 text-xs text-muted-foreground">
-                      No users found
-                    </div>
-                  )}
+                  {filteredUsers.length === 0 && <div className="px-3 py-2 text-xs text-muted-foreground">No users found</div>}
                 </SelectContent>
               </Select>
             )}
           </div>
 
-          {/* ── Account picker ── */}
           {showAccountPicker && (
             <div className="flex flex-col gap-1.5">
-              <Label className="text-xs">
-                {isDeposit ? "Deposit Into Account" : "Deduct From Account"}{" "}
-                <span className="text-destructive">*</span>
-              </Label>
+              <Label className="text-xs">{isDeposit ? "Deposit Into Account" : "Deduct From Account"} <span className="text-destructive">*</span></Label>
               {loadingTargets ? (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Loader2 className="h-3 w-3 animate-spin" /> Loading accounts…
-                </div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" /> Loading accounts…</div>
               ) : (
-                <Select
-                  value={selectedAccountId}
-                  onValueChange={setSelectedAccountId}
-                  disabled={!selectedUserId || accounts.length === 0}
-                >
+                <Select value={selectedAccountId} onValueChange={setSelectedAccountId} disabled={!selectedUserId || accounts.length === 0}>
                   <SelectTrigger>
-                    <SelectValue
-                      placeholder={
-                        !selectedUserId
-                          ? "Select a customer first"
-                          : accounts.length === 0
-                          ? "No accounts found"
-                          : "Select account"
-                      }
-                    />
+                    <SelectValue placeholder={!selectedUserId ? "Select a customer first" : accounts.length === 0 ? "No accounts found" : "Select account"} />
                   </SelectTrigger>
                   <SelectContent>
                     {accounts.map((a) => (
                       <SelectItem key={a.id} value={a.id}>
                         <div className="flex items-center gap-2">
                           <span className="font-medium">{a.name}</span>
-                          <span className="text-xs text-muted-foreground">
-                            {a.currency} — {formatCurrency(a.balance, a.currency)}
-                          </span>
+                          <span className="text-xs text-muted-foreground">{a.currency} — {formatCurrency(a.balance, a.currency)}</span>
                         </div>
                       </SelectItem>
                     ))}
@@ -505,43 +611,22 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
             </div>
           )}
 
-          {/* ── Wallet picker ── */}
           {showWalletPicker && (
             <div className="flex flex-col gap-1.5">
-              <Label className="text-xs">
-                Deduct From Wallet <span className="text-destructive">*</span>
-              </Label>
+              <Label className="text-xs">Deduct From Wallet <span className="text-destructive">*</span></Label>
               {loadingTargets ? (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Loader2 className="h-3 w-3 animate-spin" /> Loading wallets…
-                </div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" /> Loading wallets…</div>
               ) : (
-                <Select
-                  value={selectedWalletId}
-                  onValueChange={setSelectedWalletId}
-                  disabled={!selectedUserId || wallets.length === 0}
-                >
+                <Select value={selectedWalletId} onValueChange={setSelectedWalletId} disabled={!selectedUserId || wallets.length === 0}>
                   <SelectTrigger>
-                    <SelectValue
-                      placeholder={
-                        !selectedUserId
-                          ? "Select a customer first"
-                          : wallets.length === 0
-                          ? "No wallets found"
-                          : "Select wallet"
-                      }
-                    />
+                    <SelectValue placeholder={!selectedUserId ? "Select a customer first" : wallets.length === 0 ? "No wallets found" : "Select wallet"} />
                   </SelectTrigger>
                   <SelectContent>
                     {wallets.map((w) => (
                       <SelectItem key={w.id} value={w.id}>
                         <div className="flex items-center gap-2">
-                          <span className="font-mono font-medium">
-                            {w.symbol} {w.currency}
-                          </span>
-                          <span className="text-xs text-muted-foreground">
-                            {formatCurrency(w.balance, w.currency)}
-                          </span>
+                          <span className="font-mono font-medium">{w.symbol} {w.currency}</span>
+                          <span className="text-xs text-muted-foreground">{formatCurrency(w.balance, w.currency)}</span>
                         </div>
                       </SelectItem>
                     ))}
@@ -551,79 +636,42 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
             </div>
           )}
 
-          {/* ── Amount ── */}
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs">
-              Amount{" "}
-              <span className="text-muted-foreground">
-                ({showAccountPicker ? (selectedAccount?.currency ?? "—") : (selectedWallet?.currency ?? "—")})
-              </span>{" "}
+              Amount <span className="text-muted-foreground">({showAccountPicker ? (selectedAccount?.currency ?? "—") : (selectedWallet?.currency ?? "—")})</span>{" "}
               <span className="text-destructive">*</span>
             </Label>
-            <Input
-              type="number"
-              min="0"
-              step="0.01"
-              placeholder="0.00"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-            />
+            <Input type="number" min="0" step="0.01" placeholder="0.00" value={amount} onChange={(e) => setAmount(e.target.value)} />
             {previewBalance !== null && amount && !isNaN(parseFloat(amount)) && (
               <p className={`text-xs ${previewBalance.value < 0 ? "text-destructive" : "text-muted-foreground"}`}>
-                New balance:{" "}
-                <span className="font-medium text-foreground">
-                  {formatCurrency(previewBalance.value, previewBalance.currency)}
-                </span>
+                New balance: <span className="font-medium text-foreground">{formatCurrency(previewBalance.value, previewBalance.currency)}</span>
                 {previewBalance.value < 0 && " — will go negative"}
               </p>
             )}
           </div>
 
-          {/* ── Reference ── */}
           <div className="flex flex-col gap-1.5">
-            <Label className="text-xs">
-              Reference{" "}
-              <span className="text-muted-foreground">(auto-generated if blank)</span>
-            </Label>
-            <Input
-              placeholder={isDeposit ? "e.g. CASH-DEP-2026-001" : "e.g. CASH-DED-2026-001"}
-              value={reference}
-              onChange={(e) => setReference(e.target.value)}
-            />
+            <Label className="text-xs">Reference <span className="text-muted-foreground">(auto-generated if blank)</span></Label>
+            <Input placeholder={isDeposit ? "e.g. CASH-DEP-2026-001" : "e.g. CASH-DED-2026-001"} value={reference} onChange={(e) => setReference(e.target.value)} />
           </div>
 
           {error && (
             <p className="flex items-center gap-1.5 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-              {error}
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" />{error}
             </p>
           )}
         </div>
 
         <DialogFooter className="gap-2">
-          <Button
-            variant="outline"
-            onClick={() => { reset(); onClose() }}
-            disabled={submitting}
-          >
-            Cancel
-          </Button>
+          <Button variant="outline" onClick={() => { reset(); onClose() }} disabled={submitting}>Cancel</Button>
           <Button
             onClick={handleSubmit}
-            disabled={
-              submitting ||
-              !selectedUserId ||
-              (showAccountPicker && !selectedAccountId) ||
-              (showWalletPicker && !selectedWalletId) ||
-              !amount
-            }
+            disabled={submitting || !selectedUserId || (showAccountPicker && !selectedAccountId) || (showWalletPicker && !selectedWalletId) || !amount}
             variant={isDeposit ? "default" : "destructive"}
             className="gap-2"
           >
             {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-            {submitting
-              ? isDeposit ? "Processing…" : "Deducting…"
-              : isDeposit ? "Record Deposit" : "Record Deduction"}
+            {submitting ? (isDeposit ? "Processing…" : "Deducting…") : (isDeposit ? "Record Deposit" : "Record Deduction")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -646,34 +694,14 @@ export default function AdminTransactionsPage() {
   const [depositModalOpen, setDepositModalOpen] = useState(false)
   const [processingId, setProcessingId] = useState<string | null>(null)
 
-  // -------------------------------------------------------------------------
-  // Fetch — join transfers to get transfer_type + from_account_id
-  // -------------------------------------------------------------------------
-
   async function fetchTransactions() {
     setLoading(true)
     setError(null)
 
-    // Fetch transactions and transfers separately — there is no FK between them.
-    // We match them by reference field after the fact.
     const [txRes, trRes] = await Promise.all([
       supabase
         .from("transactions")
-        .select(`
-          id,
-          user_id,
-          type,
-          description,
-          amount,
-          currency,
-          status,
-          reference,
-          created_at,
-          profiles (
-            first_name,
-            last_name
-          )
-        `)
+        .select(`id, user_id, type, description, amount, currency, status, reference, created_at, profiles (first_name, last_name)`)
         .order("created_at", { ascending: false })
         .limit(200),
       supabase
@@ -688,7 +716,6 @@ export default function AdminTransactionsPage() {
       return
     }
 
-    // Build a lookup map: reference → transfer metadata
     const transferMap = new Map<string, { transferType: string; fromAccountId: string | null }>()
     for (const t of trRes.data ?? []) {
       if (t.reference) {
@@ -703,13 +730,10 @@ export default function AdminTransactionsPage() {
       (txRes.data ?? []).map((tx: any) => {
         const profile = Array.isArray(tx.profiles) ? tx.profiles[0] : tx.profiles
         const transfer = tx.reference ? transferMap.get(tx.reference) : undefined
-
         return {
           id: tx.id,
           userId: tx.user_id,
-          userName:
-            [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ||
-            "Unknown",
+          userName: [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || "Unknown",
           type: tx.type as "credit" | "debit",
           description: tx.description,
           amount: tx.amount,
@@ -729,10 +753,6 @@ export default function AdminTransactionsPage() {
     fetchTransactions()
   }, [])
 
-  // -------------------------------------------------------------------------
-  // Shared: get admin identity
-  // -------------------------------------------------------------------------
-
   async function getAdminName(): Promise<string> {
     const { data: { user: adminUser } } = await supabase.auth.getUser()
     const { data: adminProfile } = await supabase
@@ -740,32 +760,53 @@ export default function AdminTransactionsPage() {
       .select("first_name, last_name")
       .eq("id", adminUser!.id)
       .single()
-    return (
-      [adminProfile?.first_name, adminProfile?.last_name].filter(Boolean).join(" ") ||
-      "Admin"
-    )
+    return [adminProfile?.first_name, adminProfile?.last_name].filter(Boolean).join(" ") || "Admin"
   }
 
   // -------------------------------------------------------------------------
-  // Action: Complete pending transaction
+  // Complete pending transaction
   //
-  // • Internal (transfer_type === "internal"):
-  //     The RPC already deducted from the account and credited the wallet
-  //     when the transfer was submitted. "Complete" here just marks it done —
-  //     no further balance movement needed.
-  //
-  // • SWIFT / Wire / Scheduled:
-  //     The RPC deducted from the wallet on submission. The wallet balance
-  //     is already reduced. "Complete" marks it done — no further movement.
-  //     (If you prefer to hold funds as "pending" without deducting, flip
-  //     the delta logic below and adjust the RPC accordingly.)
+  // For check deposits and loan transactions: credit goes to the user's
+  // ACCOUNT balance (not wallet). We find the account by user_id + currency.
+  // For all other transactions: original wallet-based logic applies.
   // -------------------------------------------------------------------------
 
   async function completeTransaction(tx: Transaction) {
     setProcessingId(tx.id)
     const adminName = await getAdminName()
 
-    // Mark transaction completed — balance was already settled by the RPC
+    // ── Check deposit / Loan: use admin_cash_deposit RPC (same as Record Deposit) ──
+    if (tx.type === "credit" && isCheckOrLoan(tx.description)) {
+      const { data: accountRows, error: accountFetchErr } = await supabase
+        .from("accounts")
+        .select("id")
+        .eq("user_id", tx.userId)
+        .eq("currency", tx.currency)
+        .eq("is_active", true)
+        .order("created_at", { ascending: true })
+        .limit(1)
+
+      if (accountFetchErr || !accountRows || accountRows.length === 0) {
+        console.error("completeTransaction: no matching account found", tx.userId, tx.currency, accountFetchErr)
+        setProcessingId(null)
+        return
+      }
+
+      const { error: rpcErr } = await supabase.rpc("admin_cash_deposit", {
+        p_account_id: accountRows[0].id,
+        p_user_id:    tx.userId,
+        p_amount:     tx.amount,
+        p_reference:  tx.reference ?? tx.id,
+      })
+
+      if (rpcErr) {
+        console.error("completeTransaction: admin_cash_deposit RPC failed", rpcErr)
+        setProcessingId(null)
+        return
+      }
+    }
+    // ── All other transactions: just mark completed (funds settled by RPC) ──
+
     await supabase
       .from("transactions")
       .update({ status: "completed" })
@@ -793,15 +834,7 @@ export default function AdminTransactionsPage() {
   }
 
   // -------------------------------------------------------------------------
-  // Action: Decline pending transaction
-  //
-  // The RPC always deducts on submission (funds are "held").
-  // Declining must revert those funds back to the correct place:
-  //
-  // • Internal debit → revert to the SOURCE ACCOUNT (from_account_id)
-  // • SWIFT / Wire / Scheduled debit → revert to the SOURCE WALLET
-  //   but ONLY if that wallet's current balance >= 0 (don't go negative).
-  // • Any credit (pending incoming) → no balance was added yet, just cancel.
+  // Decline pending transaction
   // -------------------------------------------------------------------------
 
   async function declineTransaction(tx: Transaction) {
@@ -810,13 +843,11 @@ export default function AdminTransactionsPage() {
 
     if (tx.type === "debit") {
       if (tx.transferType === "internal" && tx.fromAccountId) {
-        // ── Revert to account ──────────────────────────────────────────────
         const { data: accountData } = await supabase
           .from("accounts")
           .select("id, balance")
           .eq("id", tx.fromAccountId)
           .single()
-
         if (accountData) {
           await supabase
             .from("accounts")
@@ -824,15 +855,12 @@ export default function AdminTransactionsPage() {
             .eq("id", accountData.id)
         }
       } else {
-        // ── Revert to wallet (swift / wire / scheduled) ────────────────────
-        // Only revert if wallet balance is currently > 0
         const { data: walletData } = await supabase
           .from("wallets")
           .select("id, balance")
           .eq("user_id", tx.userId)
           .eq("currency", tx.currency)
           .single()
-
         if (walletData && walletData.balance >= 0) {
           await supabase
             .from("wallets")
@@ -841,7 +869,7 @@ export default function AdminTransactionsPage() {
         }
       }
     }
-    // Credits: no balance was applied yet on submission → nothing to revert
+    // Credits (check deposit / loan): no funds were applied yet → nothing to revert
 
     await supabase
       .from("transactions")
@@ -876,19 +904,11 @@ export default function AdminTransactionsPage() {
     setProcessingId(null)
   }
 
-  // -------------------------------------------------------------------------
-  // Action: Clear flagged transaction
-  // -------------------------------------------------------------------------
-
   async function clearFlag(tx: Transaction) {
     setProcessingId(tx.id)
     const adminName = await getAdminName()
 
-    await supabase
-      .from("transactions")
-      .update({ status: "completed" })
-      .eq("id", tx.id)
-
+    await supabase.from("transactions").update({ status: "completed" }).eq("id", tx.id)
     await supabase.from("audit_logs").insert({
       action: `Flagged transaction cleared: ${tx.description} (${formatCurrency(tx.amount, tx.currency)})`,
       target_user_id: tx.userId,
@@ -903,25 +923,17 @@ export default function AdminTransactionsPage() {
     setProcessingId(null)
   }
 
-  // -------------------------------------------------------------------------
-  // Action: Block flagged transaction
-  //
-  // Mirrors decline logic: revert funds to the correct source.
-  // -------------------------------------------------------------------------
-
   async function blockTransaction(tx: Transaction) {
     setProcessingId(tx.id)
     const adminName = await getAdminName()
 
     if (tx.type === "debit") {
       if (tx.transferType === "internal" && tx.fromAccountId) {
-        // Revert to account
         const { data: accountData } = await supabase
           .from("accounts")
           .select("id, balance")
           .eq("id", tx.fromAccountId)
           .single()
-
         if (accountData) {
           await supabase
             .from("accounts")
@@ -929,14 +941,12 @@ export default function AdminTransactionsPage() {
             .eq("id", accountData.id)
         }
       } else {
-        // Revert to wallet — only if balance > 0
         const { data: walletData } = await supabase
           .from("wallets")
           .select("id, balance")
           .eq("user_id", tx.userId)
           .eq("currency", tx.currency)
           .single()
-
         if (walletData && walletData.balance >= 0) {
           await supabase
             .from("wallets")
@@ -946,11 +956,7 @@ export default function AdminTransactionsPage() {
       }
     }
 
-    await supabase
-      .from("transactions")
-      .update({ status: "cancelled" })
-      .eq("id", tx.id)
-
+    await supabase.from("transactions").update({ status: "cancelled" }).eq("id", tx.id)
     await supabase.from("audit_logs").insert({
       action: `Transaction blocked/cancelled: ${tx.description} (${formatCurrency(tx.amount, tx.currency)})`,
       target_user_id: tx.userId,
@@ -958,7 +964,6 @@ export default function AdminTransactionsPage() {
       admin_name: adminName,
       log_type: "transaction",
     })
-
     await supabase.from("notifications").insert({
       user_id: tx.userId,
       title: "Transaction Blocked",
@@ -997,17 +1002,10 @@ export default function AdminTransactionsPage() {
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="font-serif text-2xl font-bold text-foreground">
-            Transaction Monitoring
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Review and manage all platform transactions
-          </p>
+          <h1 className="font-serif text-2xl font-bold text-foreground">Transaction Monitoring</h1>
+          <p className="text-sm text-muted-foreground">Review and manage all platform transactions</p>
         </div>
-        <Button
-          className="shrink-0 gap-2"
-          onClick={() => setDepositModalOpen(true)}
-        >
+        <Button className="shrink-0 gap-2" onClick={() => setDepositModalOpen(true)}>
           <Plus className="h-4 w-4" />
           Cash Deposit
         </Button>
@@ -1019,44 +1017,20 @@ export default function AdminTransactionsPage() {
           <div className="flex items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/10 p-4">
             <AlertTriangle className="h-5 w-5 shrink-0 text-destructive" />
             <div className="flex-1">
-              <p className="text-sm font-medium text-foreground">
-                Suspicious Transaction{flaggedCount > 1 ? "s" : ""} Detected
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {flaggedCount} transaction{flaggedCount > 1 ? "s" : ""} flagged
-                for AML review — immediate attention required
-              </p>
+              <p className="text-sm font-medium text-foreground">Suspicious Transaction{flaggedCount > 1 ? "s" : ""} Detected</p>
+              <p className="text-xs text-muted-foreground">{flaggedCount} transaction{flaggedCount > 1 ? "s" : ""} flagged for AML review — immediate attention required</p>
             </div>
-            <Button
-              size="sm"
-              variant="destructive"
-              onClick={() => setFilter("flagged")}
-            >
-              Review Now
-            </Button>
+            <Button size="sm" variant="destructive" onClick={() => setFilter("flagged")}>Review Now</Button>
           </div>
         )}
-
         {pendingCount > 0 && (
           <div className="flex items-center gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
             <Clock className="h-5 w-5 shrink-0 text-amber-500" />
             <div className="flex-1">
-              <p className="text-sm font-medium text-foreground">
-                Pending Transaction{pendingCount > 1 ? "s" : ""} Awaiting Review
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {pendingCount} transaction{pendingCount > 1 ? "s" : ""} require
-                approval before funds are settled
-              </p>
+              <p className="text-sm font-medium text-foreground">Pending Transaction{pendingCount > 1 ? "s" : ""} Awaiting Review</p>
+              <p className="text-xs text-muted-foreground">{pendingCount} transaction{pendingCount > 1 ? "s" : ""} require approval before funds are settled</p>
             </div>
-            <Button
-              size="sm"
-              variant="outline"
-              className="border-amber-500/40 text-amber-600 hover:bg-amber-500/10"
-              onClick={() => setFilter("pending")}
-            >
-              Review
-            </Button>
+            <Button size="sm" variant="outline" className="border-amber-500/40 text-amber-600 hover:bg-amber-500/10" onClick={() => setFilter("pending")}>Review</Button>
           </div>
         )}
       </div>
@@ -1074,9 +1048,7 @@ export default function AdminTransactionsPage() {
             />
           </div>
           <Select value={filter} onValueChange={setFilter}>
-            <SelectTrigger className="w-40">
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
+            <SelectTrigger className="w-40"><SelectValue placeholder="Status" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Status</SelectItem>
               <SelectItem value="completed">Completed</SelectItem>
@@ -1093,21 +1065,16 @@ export default function AdminTransactionsPage() {
         <CardContent className="p-0">
           {loading ? (
             <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
-              <Loader2 className="h-5 w-5 animate-spin" />
-              Loading transactions…
+              <Loader2 className="h-5 w-5 animate-spin" />Loading transactions…
             </div>
           ) : error ? (
             <div className="flex flex-col items-center gap-3 py-16 text-center">
               <AlertCircle className="h-8 w-8 text-destructive" />
               <p className="text-sm text-muted-foreground">{error}</p>
-              <Button variant="outline" size="sm" onClick={fetchTransactions}>
-                Retry
-              </Button>
+              <Button variant="outline" size="sm" onClick={fetchTransactions}>Retry</Button>
             </div>
           ) : filtered.length === 0 ? (
-            <p className="py-16 text-center text-sm text-muted-foreground">
-              No transactions found.
-            </p>
+            <p className="py-16 text-center text-sm text-muted-foreground">No transactions found.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -1129,164 +1096,83 @@ export default function AdminTransactionsPage() {
                       <tr
                         key={tx.id}
                         className={`transition-colors hover:bg-muted/50 ${
-                          tx.status === "flagged"
-                            ? "bg-destructive/5"
-                            : tx.status === "pending"
-                            ? "bg-amber-500/5"
-                            : ""
+                          tx.status === "flagged" ? "bg-destructive/5" : tx.status === "pending" ? "bg-amber-500/5" : ""
                         }`}
                       >
-                        <td className="p-4 text-xs text-muted-foreground whitespace-nowrap">
-                          {formatDate(tx.createdAt)}
-                        </td>
-                        <td className="p-4">
-                          <p className="font-medium text-foreground">
-                            {tx.userName}
-                          </p>
-                        </td>
+                        <td className="p-4 text-xs text-muted-foreground whitespace-nowrap">{formatDate(tx.createdAt)}</td>
+                        <td className="p-4"><p className="font-medium text-foreground">{tx.userName}</p></td>
                         <td className="p-4">
                           <div className="flex items-center gap-2">
-                            <div
-                              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${
-                                tx.type === "credit"
-                                  ? "bg-success/10 text-success"
-                                  : "bg-destructive/10 text-destructive"
-                              }`}
-                            >
-                              {tx.type === "credit" ? (
-                                <ArrowDownLeft className="h-3 w-3" />
-                              ) : (
-                                <ArrowUpRight className="h-3 w-3" />
-                              )}
+                            <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${tx.type === "credit" ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"}`}>
+                              {tx.type === "credit" ? <ArrowDownLeft className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
                             </div>
                             <div className="flex flex-col">
-                              <span className="font-medium text-foreground">
-                                {tx.description}
-                              </span>
+                              <span className="font-medium text-foreground">{tx.description}</span>
                               {tx.transferType && (
-                                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                                  {tx.transferType}
-                                </span>
+                                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{tx.transferType}</span>
                               )}
                             </div>
                           </div>
                         </td>
-                        <td
-                          className={`p-4 font-mono font-semibold whitespace-nowrap ${
-                            tx.type === "credit"
-                              ? "text-success"
-                              : "text-foreground"
-                          }`}
-                        >
-                          {tx.type === "credit" ? "+" : "−"}
-                          {formatCurrency(Math.abs(tx.amount), tx.currency)}
+                        <td className={`p-4 font-mono font-semibold whitespace-nowrap ${tx.type === "credit" ? "text-success" : "text-foreground"}`}>
+                          {tx.type === "credit" ? "+" : "−"}{formatCurrency(Math.abs(tx.amount), tx.currency)}
                         </td>
-                        <td className="p-4 font-mono text-xs text-muted-foreground">
-                          {tx.reference ?? "—"}
+
+                        {/* ── Reference cell with image viewer ── */}
+                        <td className="p-4">
+                          <ReferenceCell tx={tx} supabase={supabase} />
                         </td>
+
                         <td className="p-4">
                           <Badge
-                            variant={
-                              tx.status === "completed"
-                                ? "secondary"
-                                : tx.status === "pending"
-                                ? "outline"
-                                : tx.status === "flagged"
-                                ? "destructive"
-                                : "outline"
-                            }
-                            className={
-                              tx.status === "pending"
-                                ? "border-amber-500/40 text-amber-600"
-                                : tx.status === "cancelled"
-                                ? "text-muted-foreground"
-                                : ""
-                            }
+                            variant={tx.status === "completed" ? "secondary" : tx.status === "pending" ? "outline" : tx.status === "flagged" ? "destructive" : "outline"}
+                            className={tx.status === "pending" ? "border-amber-500/40 text-amber-600" : tx.status === "cancelled" ? "text-muted-foreground" : ""}
                           >
-                            {tx.status === "flagged" && (
-                              <AlertTriangle className="mr-1 h-3 w-3" />
-                            )}
-                            {tx.status === "pending" && (
-                              <Clock className="mr-1 h-3 w-3" />
-                            )}
+                            {tx.status === "flagged" && <AlertTriangle className="mr-1 h-3 w-3" />}
+                            {tx.status === "pending" && <Clock className="mr-1 h-3 w-3" />}
                             {tx.status}
                           </Badge>
                         </td>
                         <td className="p-4">
-                          {/* ── Pending actions ── */}
                           {tx.status === "pending" && (
                             <div className="flex gap-1">
                               <Button
-                                size="sm"
-                                variant="outline"
+                                size="sm" variant="outline"
                                 className="h-7 gap-1 text-xs border-success/40 text-success hover:bg-success/10"
                                 disabled={isProcessing}
                                 onClick={() => completeTransaction(tx)}
                               >
-                                {isProcessing ? (
-                                  <Loader2 className="h-3 w-3 animate-spin" />
-                                ) : (
-                                  <CheckCircle2 className="h-3 w-3" />
-                                )}
+                                {isProcessing ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
                                 Complete
+                                {/* hint that account balance will be credited for check/loan */}
+                                {isCheckOrLoan(tx.description) && tx.type === "credit" && (
+                                  <span className="ml-0.5 text-[10px] opacity-70">→ acct</span>
+                                )}
                               </Button>
                               <Button
-                                size="sm"
-                                variant="outline"
+                                size="sm" variant="outline"
                                 className="h-7 gap-1 text-xs border-destructive/40 text-destructive hover:bg-destructive/10"
                                 disabled={isProcessing}
                                 onClick={() => declineTransaction(tx)}
                               >
-                                {isProcessing ? (
-                                  <Loader2 className="h-3 w-3 animate-spin" />
-                                ) : (
-                                  <Ban className="h-3 w-3" />
-                                )}
+                                {isProcessing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Ban className="h-3 w-3" />}
                                 Decline
-                                {tx.type === "debit" && (
-                                  <span className="ml-0.5 text-[10px] opacity-70">
-                                    + revert
-                                  </span>
-                                )}
+                                {tx.type === "debit" && <span className="ml-0.5 text-[10px] opacity-70">+ revert</span>}
                               </Button>
                             </div>
                           )}
-
-                          {/* ── Flagged actions ── */}
                           {tx.status === "flagged" && (
                             <div className="flex gap-1">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 gap-1 text-xs"
-                                disabled={isProcessing}
-                                onClick={() => clearFlag(tx)}
-                              >
-                                {isProcessing ? (
-                                  <Loader2 className="h-3 w-3 animate-spin" />
-                                ) : (
-                                  <CheckCircle2 className="h-3 w-3" />
-                                )}
+                              <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" disabled={isProcessing} onClick={() => clearFlag(tx)}>
+                                {isProcessing ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
                                 Clear
                               </Button>
-                              <Button
-                                size="sm"
-                                variant="destructive"
-                                className="h-7 gap-1 text-xs"
-                                disabled={isProcessing}
-                                onClick={() => blockTransaction(tx)}
-                              >
-                                {isProcessing ? (
-                                  <Loader2 className="h-3 w-3 animate-spin" />
-                                ) : (
-                                  <X className="h-3 w-3" />
-                                )}
+                              <Button size="sm" variant="destructive" className="h-7 gap-1 text-xs" disabled={isProcessing} onClick={() => blockTransaction(tx)}>
+                                {isProcessing ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
                                 Block
                               </Button>
                             </div>
                           )}
-
-                          {/* ── No actions ── */}
                           {tx.status !== "pending" && tx.status !== "flagged" && (
                             <span className="text-xs text-muted-foreground">—</span>
                           )}
@@ -1304,10 +1190,7 @@ export default function AdminTransactionsPage() {
       <CashDepositModal
         open={depositModalOpen}
         onClose={() => setDepositModalOpen(false)}
-        onSuccess={() => {
-          setDepositModalOpen(false)
-          fetchTransactions()
-        }}
+        onSuccess={() => { setDepositModalOpen(false); fetchTransactions() }}
       />
     </div>
   )
