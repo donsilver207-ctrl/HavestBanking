@@ -60,8 +60,23 @@ export default function TwoFactorPage() {
       setValue("")
       setLoading(false)
     } else {
-      router.push("/dashboard")
+  const { data: { user } } = await supabase.auth.getUser()
+
+  if (user) {
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("is_admin")
+      .eq("id", user.id)
+      .single()
+
+    if (profile?.is_admin) {
+      router.push("/admin")
+      return
     }
+  }
+
+  router.push("/dashboard")
+}
   }
 
   return (

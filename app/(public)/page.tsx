@@ -11,6 +11,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { TestimonialAvatar } from "@/components/testimonial-avatar"
 
 const features = [
   {
@@ -27,9 +28,9 @@ const features = [
   },
   {
     icon: CreditCard,
-    title: "Offshore Debit Cards",
+    title: "PrePaidCards Loading",
     description:
-      "Link Visa or Mastercard to your offshore account. Withdraw funds globally with configurable limits.",
+      "Load Prepaid Visa or Mastercard to your offshore account. Withdraw funds globally with configurable limits.",
   },
   {
     icon: BarChart3,
@@ -57,18 +58,27 @@ const testimonials = [
       "Helvetica Bank transformed how I manage my international assets. The multi-currency feature alone saved me thousands in conversion fees.",
     author: "Marcus W.",
     role: "Private Client, Tier 3",
+    avatar:
+      "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=80&h=80&fit=crop&crop=face",
+    initials: "MW",
   },
   {
     quote:
       "The level of security and compliance gives me complete peace of mind. Their KYC process was thorough yet efficient.",
     author: "Sophia C.",
     role: "Corporate Client",
+    avatar:
+      "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=80&h=80&fit=crop&crop=face",
+    initials: "SC",
   },
   {
     quote:
       "Priority SWIFT processing and a dedicated relationship manager make cross-border transactions seamless.",
     author: "James O.",
     role: "Private Banking Client",
+    avatar:
+      "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=80&h=80&fit=crop&crop=face",
+    initials: "JO",
   },
 ]
 
@@ -77,17 +87,27 @@ export default function HomePage() {
     <>
       {/* Hero Section */}
       <section className="relative overflow-hidden">
-        <div className="absolute inset-0 bg-primary/[0.03]" />
+        {/* Background image */}
+        <div
+          className="absolute inset-0 bg-cover bg-center bg-no-repeat"
+          style={{
+            backgroundImage:
+              "url('./hero-bg.png')",
+          }}
+        />
+        {/* Dark overlay */}
+        <div className="absolute inset-0 bg-black/60" />
+
         <div className="relative mx-auto max-w-7xl px-4 py-24 lg:px-8 lg:py-36">
           <div className="mx-auto max-w-3xl text-center">
-            <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-border bg-card px-4 py-1.5 text-sm text-muted-foreground">
-              <Shield className="h-4 w-4 text-primary" />
+            <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-4 py-1.5 text-sm text-white/80 backdrop-blur-sm">
+              <Shield className="h-4 w-4 text-white" />
               Swiss-Grade Offshore Banking
             </div>
-            <h1 className="text-balance font-serif text-4xl font-bold leading-tight tracking-tight text-foreground md:text-6xl lg:text-7xl">
+            <h1 className="text-balance font-serif text-4xl font-bold leading-tight tracking-tight text-white md:text-6xl lg:text-7xl">
               Offshore Banking. Borderless Wealth.
             </h1>
-            <p className="mx-auto mt-6 max-w-2xl text-pretty text-lg leading-relaxed text-muted-foreground md:text-xl">
+            <p className="mx-auto mt-6 max-w-2xl text-pretty text-lg leading-relaxed text-white/80 md:text-xl">
               Secure multi-currency accounts across premier jurisdictions.
               Private banking with SWIFT access, real-time analytics, and
               institutional-grade compliance.
@@ -100,7 +120,11 @@ export default function HomePage() {
                 </Button>
               </Link>
               <Link href="/pricing">
-                <Button variant="outline" size="lg" className="px-8">
+                <Button
+                  variant="outline"
+                  size="lg"
+                  className="border-white/30 bg-white/10 px-8 text-white hover:bg-white/20"
+                >
                   View Pricing
                 </Button>
               </Link>
@@ -181,9 +205,9 @@ export default function HomePage() {
                 tier: "Standard",
                 price: "$0",
                 features: [
-                  "Single currency",
+                  "4 currencies",
                   "$100K cap",
-                  "Basic transfers",
+                  "8% Interest per Annum",
                 ],
               },
               {
@@ -192,27 +216,26 @@ export default function HomePage() {
                 features: [
                   "4 currencies",
                   "$5M cap",
-                  "SWIFT access",
-                  "Visa card",
+                  "Dedicated manager",
+                  "15% Interest per Annum",
                 ],
               },
               {
                 tier: "Private",
                 price: "Custom",
                 features: [
-                  "Unlimited",
+                  "4 currencies",
                   "No cap",
                   "Priority SWIFT",
                   "Dedicated manager",
+                  "18% Interest per Annum",
                 ],
               },
             ].map((tier) => (
               <Card
                 key={tier.tier}
                 className={`border-border ${
-                  tier.tier === "Verified"
-                    ? "ring-2 ring-primary"
-                    : ""
+                  tier.tier === "Verified" ? "ring-2 ring-primary" : ""
                 }`}
               >
                 <CardContent className="p-6">
@@ -235,9 +258,7 @@ export default function HomePage() {
                   </ul>
                   <Link href="/pricing" className="mt-6 block">
                     <Button
-                      variant={
-                        tier.tier === "Verified" ? "default" : "outline"
-                      }
+                      variant={tier.tier === "Verified" ? "default" : "outline"}
                       className="w-full"
                     >
                       Learn More
@@ -264,11 +285,18 @@ export default function HomePage() {
                 <p className="text-sm italic leading-relaxed text-muted-foreground">
                   {`"${t.quote}"`}
                 </p>
-                <div className="mt-4 border-t border-border pt-4">
-                  <p className="text-sm font-semibold text-foreground">
-                    {t.author}
-                  </p>
-                  <p className="text-xs text-muted-foreground">{t.role}</p>
+                <div className="mt-4 flex items-center gap-3 border-t border-border pt-4">
+                  <TestimonialAvatar
+                    src={t.avatar}
+                    alt={t.author}
+                    initials={t.initials}
+                  />
+                  <div>
+                    <p className="text-sm font-semibold text-foreground">
+                      {t.author}
+                    </p>
+                    <p className="text-xs text-muted-foreground">{t.role}</p>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -287,11 +315,7 @@ export default function HomePage() {
             accounts.
           </p>
           <Link href="/auth/register">
-            <Button
-              size="lg"
-              variant="secondary"
-              className="mt-8 gap-2 px-8"
-            >
+            <Button size="lg" variant="secondary" className="mt-8 gap-2 px-8">
               Open Your Account
               <ArrowRight className="h-4 w-4" />
             </Button>

@@ -113,7 +113,7 @@ const STEP_DEFINITIONS: Omit<KycStep, "status" | "documentId" | "reviewerNotes">
   {
     stepName: "Source of Funds",
     title: "Source of Funds",
-    description: "Documentation proving origin of wealth",
+    description: "Documentation proving origin of wealth (E.g IRS Docs, Payment Slip)",
     icon: Globe,
     type: "upload",
   },
@@ -347,7 +347,7 @@ function PersonalInfoForm({ initial, onSaved }: PersonalInfoFormProps) {
       {/* National ID */}
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="pi_national_id" className="text-xs">
-          National ID / Passport Number
+          National ID / Passport Number / SSN
         </Label>
         <Input
           id="pi_national_id"

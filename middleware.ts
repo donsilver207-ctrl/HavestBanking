@@ -57,15 +57,21 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  if (user && pathname.startsWith('/auth/login')) {
-    const url = request.nextUrl.clone()
-    url.pathname = '/dashboard'
-    const redirectResponse = NextResponse.redirect(url)
+  console.log("USER:", user)
+console.log("ADMIN:", user?.user_metadata?.is_admin)
+if (user && pathname.startsWith('/auth/login')) {
+  const isAdmin = user.user_metadata?.is_admin
+  console.log("MW login redirect →", { userId: user.id, isAdmin })
+  const url = request.nextUrl.clone()
+  url.pathname = isAdmin ? '/admin' : '/dashboard'
+
+  const redirectResponse = NextResponse.redirect(url)
     supabaseResponse.cookies.getAll().forEach(cookie =>
       redirectResponse.cookies.set(cookie.name, cookie.value)
     )
     return redirectResponse
-  }
+}
+
 
   return supabaseResponse
 }
