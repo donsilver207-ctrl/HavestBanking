@@ -93,7 +93,7 @@ export async function generateStatementPDF(input: StatementInput): Promise<Blob>
       x: 0, y: PAGE_H - 56, width: PAGE_W, height: 56,
       color: COLOR.navy,
     })
-    page.drawText("HELVETICA BANK", {
+    page.drawText("CRESTMONT BANK", {
       x: MARGIN, y: PAGE_H - 36,
       size: 14, font: fontBold, color: COLOR.white,
     })
@@ -115,7 +115,7 @@ export async function generateStatementPDF(input: StatementInput): Promise<Blob>
       start: { x: MARGIN, y: 36 }, end: { x: PAGE_W - MARGIN, y: 36 },
       thickness: 0.5, color: COLOR.midGray,
     })
-    page.drawText("Helvetica Bank SA · Bahnhofstrasse 12 · 8001 Zürich · Switzerland", {
+    page.drawText("Crestmont Bank SA · Bahnhofstrasse 12 · 8001 Zürich · Switzerland", {
       x: MARGIN, y: 22, size: 7, font: fontRegular, color: COLOR.midGray,
     })
     page.drawText(`Generated ${new Date().toLocaleDateString("en-CH")}`, {

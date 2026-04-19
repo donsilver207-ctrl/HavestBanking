@@ -22,7 +22,7 @@ const links = [
   { href: "/admin/kyc", label: "KYC Review", icon: Shield },
   { href: "/admin/transactions", label: "Transactions", icon: ArrowRightLeft },
   { href: "/admin/fx-rates", label: "Statments", icon: DollarSign },
-  { href: "/admin/fees", label: "Fees & Limits", icon: Receipt },
+  { href: "/admin/mails", label: "Emails", icon: Receipt },
   { href: "/admin/logs", label: "Audit Logs", icon: ScrollText },
 ]
 
