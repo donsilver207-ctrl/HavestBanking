@@ -1,7 +1,7 @@
 /**
  * generate-statement-pdf.ts
  *
- * Generates a Helvetica Bank account statement PDF as a Blob.
+ * Generates a Crestmont Bank account statement PDF as a Blob.
  * Uses pdf-lib (browser-safe, no Node.js required).
  *
  * Install: npm install pdf-lib

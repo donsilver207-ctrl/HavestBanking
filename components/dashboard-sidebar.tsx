@@ -183,7 +183,7 @@ export function DashboardSidebar({
           <Link href="/" className="flex items-center gap-2">
             <Shield className="h-6 w-6 text-sidebar-primary" />
             <span className="font-serif text-lg font-bold text-sidebar-foreground">
-              Helvetica
+              Crestmont
             </span>
           </Link>
           <Button

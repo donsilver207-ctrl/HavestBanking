@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState, useCallback } from "react"
+import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -124,6 +125,7 @@ function SaveBanner({
 
 export default function SettingsPage() {
   const supabase = createClient()
+  const router = useRouter()
 
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState<string | null>(null)
@@ -142,19 +144,22 @@ export default function SettingsPage() {
     timezone: "CET",
   })
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false)
+  // Tracks whether the user has a verified TOTP factor in Supabase Auth
+  const [hasVerifiedTotp, setHasVerifiedTotp] = useState(false)
+  const [toggling2FA, setToggling2FA] = useState(false)
 
   // Password fields
   const [newPassword, setNewPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
 
   // Per-section save/busy state
-  const [profileStatus, setProfileStatus]       = useState<"success" | "error" | null>(null)
-  const [prefsStatus, setPrefsStatus]           = useState<"success" | "error" | null>(null)
-  const [passwordStatus, setPasswordStatus]     = useState<"success" | "error" | null>(null)
-  const [passwordErrMsg, setPasswordErrMsg]     = useState<string | null>(null)
-  const [savingProfile, setSavingProfile]       = useState(false)
-  const [savingPrefs, setSavingPrefs]           = useState(false)
-  const [savingPassword, setSavingPassword]     = useState(false)
+  const [profileStatus, setProfileStatus]   = useState<"success" | "error" | null>(null)
+  const [prefsStatus, setPrefsStatus]       = useState<"success" | "error" | null>(null)
+  const [passwordStatus, setPasswordStatus] = useState<"success" | "error" | null>(null)
+  const [passwordErrMsg, setPasswordErrMsg] = useState<string | null>(null)
+  const [savingProfile, setSavingProfile]   = useState(false)
+  const [savingPrefs, setSavingPrefs]       = useState(false)
+  const [savingPassword, setSavingPassword] = useState(false)
 
   // -------------------------------------------------------------------------
   // Fetch
@@ -175,19 +180,25 @@ export default function SettingsPage() {
       return
     }
 
-    const { data: pd, error: profileError } = await supabase
-      .from("profiles")
-      .select(
-        "first_name, last_name, email, phone, country, default_currency, language, timezone, two_factor_enabled"
-      )
-      .eq("id", user.id)
-      .single()
+    // Fetch profile row and MFA factor list in parallel
+    const [profileResult, factorsResult] = await Promise.all([
+      supabase
+        .from("profiles")
+        .select(
+          "first_name, last_name, email, phone, country, default_currency, language, timezone, two_factor_enabled"
+        )
+        .eq("id", user.id)
+        .single(),
+      supabase.auth.mfa.listFactors(),
+    ])
 
-    if (profileError) {
+    if (profileResult.error) {
       setFetchError("Failed to load profile data.")
       setLoading(false)
       return
     }
+
+    const pd = profileResult.data
 
     setProfile({
       first_name: pd.first_name ?? "",
@@ -204,6 +215,13 @@ export default function SettingsPage() {
     })
 
     setTwoFactorEnabled(pd.two_factor_enabled ?? false)
+
+    // Check if the user already has a verified TOTP factor enrolled
+    const verifiedTotp = factorsResult.data?.totp?.find(
+      (f) => f.status === "verified"
+    )
+    setHasVerifiedTotp(!!verifiedTotp)
+
     setLoading(false)
   }, [])
 
@@ -287,24 +305,47 @@ export default function SettingsPage() {
   }
 
   // -------------------------------------------------------------------------
-  // Toggle 2FA — persists to profiles.two_factor_enabled
+  // Toggle 2FA — smart: redirect to setup if TOTP not yet enrolled
   // -------------------------------------------------------------------------
 
   const handleToggle2FA = async (enabled: boolean) => {
-    setTwoFactorEnabled(enabled) // optimistic
+    if (toggling2FA) return
+    setToggling2FA(true)
 
     const {
       data: { user },
     } = await supabase.auth.getUser()
-    if (!user) return
 
-    await supabase
-      .from("profiles")
-      .update({
-        two_factor_enabled: enabled,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", user.id)
+    if (!user) {
+      setToggling2FA(false)
+      return
+    }
+
+    if (enabled) {
+      if (!hasVerifiedTotp) {
+        // User has never completed TOTP setup — send them through the flow
+        router.push("/auth/2fa_setup")
+        setToggling2FA(false)
+        return
+      }
+
+      // TOTP already enrolled and verified — just re-enable the DB flag
+      setTwoFactorEnabled(true) // optimistic
+      await supabase
+        .from("profiles")
+        .update({ two_factor_enabled: true, updated_at: new Date().toISOString() })
+        .eq("id", user.id)
+    } else {
+      // Disabling: update DB flag only (the TOTP factor remains enrolled so
+      // the user can re-enable without re-scanning)
+      setTwoFactorEnabled(false) // optimistic
+      await supabase
+        .from("profiles")
+        .update({ two_factor_enabled: false, updated_at: new Date().toISOString() })
+        .eq("id", user.id)
+    }
+
+    setToggling2FA(false)
   }
 
   // -------------------------------------------------------------------------
@@ -383,11 +424,11 @@ export default function SettingsPage() {
       </div>
 
       <Tabs defaultValue="profile">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="profile">Profile</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="notifications">Alerts</TabsTrigger>
-          <TabsTrigger value="preferences">Preferences</TabsTrigger>
+          {/*<TabsTrigger value="preferences">Preferences</TabsTrigger>*/}
         </TabsList>
 
         {/* ── PROFILE ── */}
@@ -508,7 +549,11 @@ export default function SettingsPage() {
                         Authenticator App
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        Google Authenticator or similar
+                        {hasVerifiedTotp
+                          ? twoFactorEnabled
+                            ? "Google Authenticator or similar"
+                            : "Previously set up — toggle to re-enable"
+                          : "Google Authenticator or similar"}
                       </p>
                     </div>
                   </div>
@@ -522,12 +567,24 @@ export default function SettingsPage() {
                     >
                       {twoFactorEnabled ? "Enabled" : "Disabled"}
                     </Badge>
-                    <Switch
-                      checked={twoFactorEnabled}
-                      onCheckedChange={handleToggle2FA}
-                    />
+                    {toggling2FA ? (
+                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                    ) : (
+                      <Switch
+                        checked={twoFactorEnabled}
+                        onCheckedChange={handleToggle2FA}
+                      />
+                    )}
                   </div>
                 </div>
+
+                {/* Hint shown only when 2FA is off and setup is needed */}
+                {!twoFactorEnabled && !hasVerifiedTotp && (
+                  <p className="text-xs text-muted-foreground px-1">
+                    Enabling authenticator will open the setup flow where you
+                    can scan a QR code with your authenticator app.
+                  </p>
+                )}
 
                 {/* Email verification — always on for email-based accounts */}
                 <div className="flex items-center justify-between rounded-lg border border-border p-4">
@@ -601,8 +658,7 @@ export default function SettingsPage() {
               </CardContent>
             </Card>
 
-            {/* Active sessions — Supabase client SDK doesn't expose a session
-                list, so we surface the current session only */}
+            {/* Active sessions */}
             <Card className="border-border">
               <CardHeader>
                 <CardTitle>Active Sessions</CardTitle>
@@ -625,8 +681,6 @@ export default function SettingsPage() {
         </TabsContent>
 
         {/* ── ALERTS ── */}
-        {/* The schema has no notification-preferences table, so these toggles
-            are uncontrolled/local until a prefs column or table is added. */}
         <TabsContent value="notifications">
           <Card className="border-border">
             <CardHeader>
@@ -682,7 +736,7 @@ export default function SettingsPage() {
           </Card>
         </TabsContent>
 
-        {/* ── PREFERENCES ── */}
+        {/* ── PREFERENCES ── 
         <TabsContent value="preferences">
           <Card className="border-border">
             <CardHeader>
@@ -764,7 +818,7 @@ export default function SettingsPage() {
               </Button>
             </CardContent>
           </Card>
-        </TabsContent>
+        </TabsContent>*/}
       </Tabs>
     </div>
   )

@@ -13,7 +13,7 @@ export default function AuthLayout({
         <Link href="/" className="flex items-center gap-2">
           <Shield className="h-7 w-7 text-primary-foreground" />
           <span className="font-serif text-xl font-bold text-primary-foreground">
-            Helvetica Bank
+            Crestmont Bank
           </span>
         </Link>
         <div>
@@ -25,7 +25,7 @@ export default function AuthLayout({
           </p>
         </div>
         <p className="text-xs text-primary-foreground/40">
-          {"2026 Helvetica Bank AG. Simulated platform."}
+          {"2026 Crestmont Bank AG. Simulated platform."}
         </p>
       </div>
 
@@ -35,7 +35,7 @@ export default function AuthLayout({
           <Link href="/" className="flex items-center gap-2">
             <Shield className="h-6 w-6 text-primary" />
             <span className="font-serif text-lg font-bold text-foreground">
-              Helvetica Bank
+              Crestmont Bank
             </span>
           </Link>
         </div>

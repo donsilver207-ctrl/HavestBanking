@@ -18,7 +18,7 @@ export default function PrivacyPage() {
         </section>
         <section>
           <h2 className="mb-2 text-lg font-semibold text-foreground">Your Rights</h2>
-          <p>Under applicable data protection laws, you have the right to access, rectify, delete, or port your personal data. Contact our Data Protection Officer at dpo@helveticabank.ch for any requests.</p>
+          <p>Under applicable data protection laws, you have the right to access, rectify, delete, or port your personal data. Contact our Data Protection Officer at support@crestmontbanking.com for any requests.</p>
         </section>
       </div>
     </div>

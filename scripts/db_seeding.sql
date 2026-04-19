@@ -134,7 +134,7 @@ begin
   insert into public.notifications (user_id, title, message, type, is_read)
   values (
     new.id,
-    'Welcome to Helvetica Bank',
+    'Welcome to Crestmont Bank',
     'Your account has been created. Please complete KYC verification to unlock all features.',
     'general',
     false

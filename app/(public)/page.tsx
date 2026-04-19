@@ -55,7 +55,7 @@ const features = [
 const testimonials = [
   {
     quote:
-      "Helvetica Bank transformed how I manage my international assets. The multi-currency feature alone saved me thousands in conversion fees.",
+      "Crestmont Bank transformed how I manage my international assets. The multi-currency feature alone saved me thousands in conversion fees.",
     author: "Marcus W.",
     role: "Private Client, Tier 3",
     avatar:
@@ -89,11 +89,11 @@ export default function HomePage() {
       <section className="relative overflow-hidden">
         {/* Background image */}
         <div
-          className="absolute inset-0 bg-cover bg-center bg-no-repeat"
-          style={{
-            backgroundImage:
-              "url('./hero-bg.png')",
-          }}
+          className="absolute inset-0 bg-cover bg-no-repeat"
+            style={{
+              backgroundImage: "url('./hero-bg.png')",
+              backgroundPosition: "75% center",
+            }}
         />
         {/* Dark overlay */}
         <div className="absolute inset-0 bg-black/60" />

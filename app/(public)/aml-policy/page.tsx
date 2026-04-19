@@ -6,7 +6,7 @@ export default function AmlPolicyPage() {
       <div className="mt-8 flex flex-col gap-6 text-sm leading-relaxed text-muted-foreground">
         <section>
           <h2 className="mb-2 text-lg font-semibold text-foreground">Commitment</h2>
-          <p>Helvetica Bank is committed to the highest standards of Anti-Money Laundering (AML) compliance. We actively monitor, detect, and report suspicious activities in accordance with international regulations and FATF recommendations.</p>
+          <p>Crestmont Bank is committed to the highest standards of Anti-Money Laundering (AML) compliance. We actively monitor, detect, and report suspicious activities in accordance with international regulations and FATF recommendations.</p>
         </section>
         <section>
           <h2 className="mb-2 text-lg font-semibold text-foreground">Transaction Monitoring</h2>

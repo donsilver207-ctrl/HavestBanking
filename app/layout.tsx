@@ -14,7 +14,7 @@ const playfair = Playfair_Display({
 })
 
 export const metadata: Metadata = {
-  title: "Helvetica Bank | Swiss Offshore Banking",
+  title: "Crestmont Bank | Offshore Banking",
   description:
     "Secure offshore banking with multi-currency support, SWIFT transfers, and private wealth management. Swiss-grade security for global citizens.",
 }
