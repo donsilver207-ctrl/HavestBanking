@@ -9,7 +9,7 @@ const supabase = createClient(
 )
 
 export async function POST(req: NextRequest) {
-  const { to, subject, body, from = "admin@crestmontintl.com" } = await req.json()
+  const { to, subject, body, from = "support@crestmontintl.com" } = await req.json()
 
   const { data, error } = await resend.emails.send({
     from,
