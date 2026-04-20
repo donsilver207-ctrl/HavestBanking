@@ -143,8 +143,38 @@ function ComposeModal({
     if (error) throw new Error(error.message)
     return data as Email
   }
-
-  const handleSend = async () => {
+const handleSend = async () => {
+  if (!to || !subject) return
+  setBusy(true); setError(null)
+  try {
+    const res = await fetch("/api/email/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to, subject, body }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error?.message ?? "Send failed")
+    onSent({
+      id:           json.id ?? crypto.randomUUID(),
+      direction:    "sent",
+      from_address: MY_ADDRESS,
+      to_address:   to,
+      subject,
+      body_text:    body,
+      preview:      body.slice(0, 120),
+      read:         true,
+      starred:      false,
+      attachments:  files,
+      created_at:   new Date().toISOString(),
+    })
+    onClose()
+  } catch (e: any) {
+    setError(e.message)
+  } finally {
+    setBusy(false)
+  }
+}
+  /*const handleSend = async () => {
     if (!to || !subject) return
     setBusy(true); setError(null)
     try {
@@ -176,7 +206,7 @@ function ComposeModal({
     const { data: { session } } = await supabase.auth.getSession()
 console.log("role:", session?.user?.role)
 console.log("jwt:", session?.access_token)
-  }
+  }*/
 
   const handleSaveDraft = async () => {
     setBusy(true); setError(null)
