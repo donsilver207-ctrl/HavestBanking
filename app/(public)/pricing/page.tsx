@@ -93,12 +93,12 @@ export default function PricingPage() {
               <tbody className="divide-y divide-border">
                 {[
                   ["Balance Cap", "$100,000", "$5,000,000", "Unlimited"],
-                  ["SWIFT Access", "No", "Yes", "Priority"],
-                  ["Card Withdrawals", "No", "$10K/month", "Unlimited"],
+                  ["SWIFT Access", "Yes", "Yes", "Priority"],
+                  ["Card Withdrawals", "Yes", "$10K/month", "Unlimited"],
                   ["FX Access", "No", "Standard rates", "Preferential rates"],
                   ["Corporate Features", "No", "Basic", "Full suite"],
-                  ["Support", "Email", "Priority", "Dedicated Manager"],
-                  ["Multi-Currency", "1 wallet", "4 wallets", "Unlimited"],
+                  ["Support", "Email", "Dedicated Manager", "Dedicated Manager"],
+                  ["Multi-Currency", "4 wallet", "4 wallets", "4 wallets"],
                   ["Analytics", "Basic", "Advanced", "Custom Reports"],
                 ].map(([feature, ...tiers]) => (
                   <tr key={feature}>
