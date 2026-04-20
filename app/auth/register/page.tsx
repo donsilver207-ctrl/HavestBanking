@@ -126,7 +126,7 @@ export default function RegisterPage() {
           <Label htmlFor="nationalId">National ID (Optional)</Label>
           <Input
             id="nationalId"
-            placeholder="SSN / Passport / NIN"
+            placeholder="SSN / Passport / NINo"
             value={nationalId}
             onChange={(e) => setNationalId(e.target.value)}
             disabled={loading}
