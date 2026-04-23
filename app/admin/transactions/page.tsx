@@ -15,6 +15,7 @@ import {
   Ban,
   FileImage,
   ExternalLink,
+  CalendarIcon,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -102,6 +103,15 @@ function formatDate(iso: string) {
     hour: "2-digit",
     minute: "2-digit",
   })
+}
+
+/** Returns local datetime string for <input type="datetime-local"> defaulting to now */
+function toDatetimeLocal(date: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}`
+  )
 }
 
 /** Returns true if the description suggests a check deposit or loan application */
@@ -336,6 +346,13 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
   const [amount, setAmount] = useState("")
   const [reference, setReference] = useState("")
   const [userSearch, setUserSearch] = useState("")
+  // Date override — defaults to now when modal opens
+  const [transactionDate, setTransactionDate] = useState<string>(toDatetimeLocal())
+
+  // Reset date to now whenever the modal opens
+  useEffect(() => {
+    if (open) setTransactionDate(toDatetimeLocal())
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -420,6 +437,7 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
     setError(null)
     setAccounts([])
     setWallets([])
+    setTransactionDate(toDatetimeLocal())
   }
 
   async function handleSubmit() {
@@ -461,6 +479,11 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
     const selectedUser = users.find((u) => u.id === selectedUserId)!
     const ref = reference.trim() || `${mode === "deposit" ? "CASH-DEP" : "CASH-DED"}-${Date.now()}`
 
+    // Convert the local datetime string to an ISO timestamp
+    const overrideTimestamp = transactionDate
+      ? new Date(transactionDate).toISOString()
+      : new Date().toISOString()
+
     if (mode === "deposit") {
       const { error: depositErr } = await supabase.rpc("admin_cash_deposit", {
         p_account_id: selectedAccountId,
@@ -473,8 +496,16 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
         setSubmitting(false)
         return
       }
+
+      // Patch the transaction's created_at to the admin-chosen date
+      await supabase
+        .from("transactions")
+        .update({ created_at: overrideTimestamp })
+        .eq("reference", ref)
+        .eq("user_id", selectedUserId)
+
       await supabase.from("audit_logs").insert({
-        action: `Cash deposit of ${formatCurrency(parsedAmount, selectedAccount!.currency)} into account "${selectedAccount!.name}". Ref: ${ref}`,
+        action: `Cash deposit of ${formatCurrency(parsedAmount, selectedAccount!.currency)} into account "${selectedAccount!.name}". Ref: ${ref}. Dated: ${formatDate(overrideTimestamp)}`,
         target_user_id: selectedUserId,
         target_user_name: selectedUser.name,
         admin_name: adminName,
@@ -500,10 +531,18 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
         setSubmitting(false)
         return
       }
+
+      // Patch the transaction's created_at to the admin-chosen date
+      await supabase
+        .from("transactions")
+        .update({ created_at: overrideTimestamp })
+        .eq("reference", ref)
+        .eq("user_id", selectedUserId)
+
       const targetLabel = deductTarget === "account" ? `account "${selectedAccount!.name}"` : `${selectedWallet!.currency} wallet`
       const currency = deductTarget === "account" ? selectedAccount!.currency : selectedWallet!.currency
       await supabase.from("audit_logs").insert({
-        action: `Cash deduction of ${formatCurrency(parsedAmount, currency)} from ${targetLabel}. Ref: ${ref}`,
+        action: `Cash deduction of ${formatCurrency(parsedAmount, currency)} from ${targetLabel}. Ref: ${ref}. Dated: ${formatDate(overrideTimestamp)}`,
         target_user_id: selectedUserId,
         target_user_name: selectedUser.name,
         admin_name: adminName,
@@ -650,6 +689,28 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
             )}
           </div>
 
+          {/* ── Transaction Date Override ── */}
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs flex items-center gap-1.5">
+              <CalendarIcon className="h-3 w-3 text-muted-foreground" />
+              Transaction Date
+              <span className="text-muted-foreground">(defaults to now)</span>
+            </Label>
+            <Input
+              type="datetime-local"
+              value={transactionDate}
+              onChange={(e) => setTransactionDate(e.target.value)}
+              max={toDatetimeLocal()}
+              className="text-xs"
+            />
+            {transactionDate && new Date(transactionDate) < new Date(Date.now() - 60_000) && (
+              <p className="text-[11px] text-amber-600 flex items-center gap-1">
+                <AlertCircle className="h-3 w-3 shrink-0" />
+                Backdated transaction — will be recorded with historical date
+              </p>
+            )}
+          </div>
+
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs">Reference <span className="text-muted-foreground">(auto-generated if blank)</span></Label>
             <Input placeholder={isDeposit ? "e.g. CASH-DEP-2026-001" : "e.g. CASH-DED-2026-001"} value={reference} onChange={(e) => setReference(e.target.value)} />
@@ -680,6 +741,118 @@ function CashDepositModal({ open, onClose, onSuccess }: CashDepositModalProps) {
 }
 
 // ---------------------------------------------------------------------------
+// Approve Transaction Modal — shown when admin clicks "Complete" on a pending tx
+// ---------------------------------------------------------------------------
+
+interface ApproveTransactionModalProps {
+  tx: Transaction | null
+  onClose: () => void
+  onConfirm: (tx: Transaction, overrideDate: string) => void
+  processing: boolean
+}
+
+function ApproveTransactionModal({ tx, onClose, onConfirm, processing }: ApproveTransactionModalProps) {
+  const [approvalDate, setApprovalDate] = useState<string>(toDatetimeLocal())
+
+  // Reset to now whenever a new transaction is opened
+  useEffect(() => {
+    if (tx) setApprovalDate(toDatetimeLocal())
+  }, [tx?.id])
+
+  if (!tx) return null
+
+  const isBackdated = approvalDate && new Date(approvalDate) < new Date(Date.now() - 60_000)
+
+  return (
+    <Dialog open={!!tx} onOpenChange={(v) => { if (!v) onClose() }}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="font-serif text-lg flex items-center gap-2">
+            <CheckCircle2 className="h-5 w-5 text-success" />
+            Complete Transaction
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="flex flex-col gap-4 py-1">
+          {/* Transaction summary */}
+          <div className="rounded-lg border border-border bg-muted/40 p-3 flex flex-col gap-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">Customer</span>
+              <span className="text-xs font-medium text-foreground">{tx.userName}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">Description</span>
+              <span className="text-xs font-medium text-foreground truncate max-w-[180px]">{tx.description}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">Amount</span>
+              <span className={`text-xs font-semibold font-mono ${tx.type === "credit" ? "text-success" : "text-foreground"}`}>
+                {tx.type === "credit" ? "+" : "−"}{formatCurrency(Math.abs(tx.amount), tx.currency)}
+              </span>
+            </div>
+            {tx.reference && (
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Reference</span>
+                <span className="text-xs font-mono text-muted-foreground">{tx.reference.slice(0, 24)}{tx.reference.length > 24 ? "…" : ""}</span>
+              </div>
+            )}
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">Original Date</span>
+              <span className="text-xs text-muted-foreground">{formatDate(tx.createdAt)}</span>
+            </div>
+          </div>
+
+          {/* Date override */}
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs flex items-center gap-1.5">
+              <CalendarIcon className="h-3 w-3 text-muted-foreground" />
+              Completion Date
+              <span className="text-muted-foreground">(defaults to now)</span>
+            </Label>
+            <Input
+              type="datetime-local"
+              value={approvalDate}
+              onChange={(e) => setApprovalDate(e.target.value)}
+              className="text-xs"
+            />
+            {isBackdated ? (
+              <p className="text-[11px] text-amber-600 flex items-center gap-1">
+                <AlertCircle className="h-3 w-3 shrink-0" />
+                Transaction will be completed with a historical date
+              </p>
+            ) : (
+              <p className="text-[11px] text-muted-foreground">
+                This sets the <code className="text-[10px] bg-muted px-1 rounded">created_at</code> timestamp on the transaction record.
+              </p>
+            )}
+          </div>
+
+          {isCheckOrLoan(tx.description) && tx.type === "credit" && (
+            <p className="text-[11px] text-muted-foreground flex items-center gap-1 rounded-md border border-border bg-muted/40 px-3 py-2">
+              <CheckCircle2 className="h-3 w-3 shrink-0 text-success" />
+              Funds will be credited to the customer's account balance.
+            </p>
+          )}
+        </div>
+
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={onClose} disabled={processing}>Cancel</Button>
+          <Button
+            onClick={() => onConfirm(tx, approvalDate || toDatetimeLocal())}
+            disabled={processing || !approvalDate}
+            className="gap-2 border-success/40 bg-success/10 text-success hover:bg-success/20"
+            variant="outline"
+          >
+            {processing ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+            {processing ? "Processing…" : "Confirm & Complete"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
@@ -693,6 +866,9 @@ export default function AdminTransactionsPage() {
   const [filter, setFilter] = useState("all")
   const [depositModalOpen, setDepositModalOpen] = useState(false)
   const [processingId, setProcessingId] = useState<string | null>(null)
+
+  // Approval modal state
+  const [pendingApprovalTx, setPendingApprovalTx] = useState<Transaction | null>(null)
 
   async function fetchTransactions() {
     setLoading(true)
@@ -764,18 +940,19 @@ export default function AdminTransactionsPage() {
   }
 
   // -------------------------------------------------------------------------
-  // Complete pending transaction
-  //
-  // For check deposits and loan transactions: credit goes to the user's
-  // ACCOUNT balance (not wallet). We find the account by user_id + currency.
-  // For all other transactions: original wallet-based logic applies.
+  // Complete pending transaction (called after modal confirmation with date)
   // -------------------------------------------------------------------------
 
-  async function completeTransaction(tx: Transaction) {
+  async function completeTransaction(tx: Transaction, overrideDate?: string) {
     setProcessingId(tx.id)
+    setPendingApprovalTx(null)
     const adminName = await getAdminName()
 
-    // ── Check deposit / Loan: use admin_cash_deposit RPC (same as Record Deposit) ──
+    const completionTimestamp = overrideDate
+      ? new Date(overrideDate).toISOString()
+      : new Date().toISOString()
+
+    // ── Check deposit / Loan: use admin_cash_deposit RPC ──
     if (tx.type === "credit" && isCheckOrLoan(tx.description)) {
       const { data: accountRows, error: accountFetchErr } = await supabase
         .from("accounts")
@@ -805,15 +982,15 @@ export default function AdminTransactionsPage() {
         return
       }
     }
-    // ── All other transactions: just mark completed (funds settled by RPC) ──
 
+    // Update status and apply the date override
     await supabase
       .from("transactions")
-      .update({ status: "completed" })
+      .update({ status: "completed", created_at: completionTimestamp })
       .eq("id", tx.id)
 
     await supabase.from("audit_logs").insert({
-      action: `Pending transaction completed: ${tx.description} (${formatCurrency(tx.amount, tx.currency)})`,
+      action: `Pending transaction completed: ${tx.description} (${formatCurrency(tx.amount, tx.currency)}). Dated: ${formatDate(completionTimestamp)}`,
       target_user_id: tx.userId,
       target_user_name: tx.userName,
       admin_name: adminName,
@@ -828,7 +1005,11 @@ export default function AdminTransactionsPage() {
     })
 
     setTransactions((prev) =>
-      prev.map((t) => (t.id === tx.id ? { ...t, status: "completed" } : t))
+      prev.map((t) =>
+        t.id === tx.id
+          ? { ...t, status: "completed", createdAt: completionTimestamp }
+          : t
+      )
     )
     setProcessingId(null)
   }
@@ -869,7 +1050,6 @@ export default function AdminTransactionsPage() {
         }
       }
     }
-    // Credits (check deposit / loan): no funds were applied yet → nothing to revert
 
     await supabase
       .from("transactions")
@@ -1136,15 +1316,15 @@ export default function AdminTransactionsPage() {
                         <td className="p-4">
                           {tx.status === "pending" && (
                             <div className="flex gap-1">
+                              {/* Complete — opens the approval modal with date picker */}
                               <Button
                                 size="sm" variant="outline"
                                 className="h-7 gap-1 text-xs border-success/40 text-success hover:bg-success/10"
                                 disabled={isProcessing}
-                                onClick={() => completeTransaction(tx)}
+                                onClick={() => setPendingApprovalTx(tx)}
                               >
                                 {isProcessing ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
                                 Complete
-                                {/* hint that account balance will be credited for check/loan */}
                                 {isCheckOrLoan(tx.description) && tx.type === "credit" && (
                                   <span className="ml-0.5 text-[10px] opacity-70">→ acct</span>
                                 )}
@@ -1187,10 +1367,18 @@ export default function AdminTransactionsPage() {
         </CardContent>
       </Card>
 
+      {/* Modals */}
       <CashDepositModal
         open={depositModalOpen}
         onClose={() => setDepositModalOpen(false)}
         onSuccess={() => { setDepositModalOpen(false); fetchTransactions() }}
+      />
+
+      <ApproveTransactionModal
+        tx={pendingApprovalTx}
+        onClose={() => setPendingApprovalTx(null)}
+        onConfirm={(tx, date) => completeTransaction(tx, date)}
+        processing={processingId === pendingApprovalTx?.id}
       />
     </div>
   )
