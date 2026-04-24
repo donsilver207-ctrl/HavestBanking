@@ -9,6 +9,7 @@ import {
   TrendingDown,
   ArrowRight,
   Shield,
+  DollarSign,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -41,6 +42,11 @@ interface Profile {
   kyc_status: string
 }
 
+interface FxRate {
+  pair: string   // e.g. "CHF/USD", "EUR/USD"
+  rate: number   // how many USD per 1 unit of base currency
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatCurrency(amount: number, currency: string) {
@@ -52,6 +58,15 @@ function formatCurrency(amount: number, currency: string) {
   }).format(amount)
 }
 
+function formatUSD(amount: number) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(amount)
+}
+
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", {
     month: "short",
@@ -60,16 +75,47 @@ function formatDate(iso: string) {
   })
 }
 
+/**
+ * Convert an amount in `currency` to USD using the fx_rates map.
+ *
+ * The fx_rates table stores pairs like "CHF/USD" where rate = USD per 1 CHF.
+ * If the wallet IS already USD, return as-is.
+ * Falls back to null when no rate is found.
+ */
+function toUSD(
+  amount: number,
+  currency: string,
+  rateMap: Record<string, number>
+): number | null {
+  if (currency === "USD") return amount
+
+  // Try direct pair first: e.g. "CHF/USD"
+  const directKey = `${currency}/USD`
+  if (rateMap[directKey] !== undefined) {
+    return amount * rateMap[directKey]
+  }
+
+  // Try inverse pair: e.g. "USD/CHF" → rate = CHF per 1 USD → invert
+  const inverseKey = `USD/${currency}`
+  if (rateMap[inverseKey] !== undefined && rateMap[inverseKey] !== 0) {
+    return amount / rateMap[inverseKey]
+  }
+
+  return null
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
-  const supabase =  createBrowserClient(
+  const supabase = createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   )
+
   const [wallets, setWallets] = useState<Wallet[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [profile, setProfile] = useState<Profile | null>(null)
+  const [rateMap, setRateMap] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -80,7 +126,7 @@ export default function DashboardPage() {
 
       if (!user) return
 
-      const [walletsRes, txRes, profileRes] = await Promise.all([
+      const [walletsRes, txRes, profileRes, fxRes] = await Promise.all([
         supabase
           .from("wallets")
           .select("id, currency, symbol, balance, change_percent")
@@ -99,11 +145,25 @@ export default function DashboardPage() {
           .select("tier, kyc_status")
           .eq("id", user.id)
           .single(),
+
+        // Fetch all FX rates — no user filter needed (public read policy)
+        supabase
+          .from("fx_rates")
+          .select("pair, rate"),
       ])
 
       if (walletsRes.data) setWallets(walletsRes.data)
       if (txRes.data) setTransactions(txRes.data)
       if (profileRes.data) setProfile(profileRes.data)
+
+      // Build a lookup map: { "CHF/USD": 1.1230, "EUR/USD": 1.0850, ... }
+      if (fxRes.data) {
+        const map: Record<string, number> = {}
+        for (const row of fxRes.data as FxRate[]) {
+          map[row.pair] = Number(row.rate)
+        }
+        setRateMap(map)
+      }
 
       setLoading(false)
     }
@@ -111,7 +171,20 @@ export default function DashboardPage() {
     fetchData()
   }, [supabase])
 
-  const totalBalance = wallets.reduce((sum, w) => sum + w.balance, 0)
+  // ── Derived values ─────────────────────────────────────────────────────────
+
+  // Total USD equivalent across all wallets
+  const totalUSD = wallets.reduce((sum, w) => {
+    const usd = toUSD(w.balance, w.currency, rateMap)
+    return usd !== null ? sum + usd : sum
+  }, 0)
+
+  // Per-wallet USD equivalent
+  const walletsWithUSD = wallets.map((w) => ({
+    ...w,
+    usdEquivalent: toUSD(w.balance, w.currency, rateMap),
+  }))
+
   const isKycApproved = profile?.kyc_status === "approved"
   const tierLabel =
     profile?.tier === 3
@@ -150,11 +223,14 @@ export default function DashboardPage() {
 
       {/* Top stats */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        {/* Total Balance → now shown in USD equivalent */}
         <Card className="border-border">
           <CardContent className="p-5">
-            <p className="text-xs text-muted-foreground">Total Balance</p>
+            <p className="text-xs text-muted-foreground">
+              Total Balance (USD equiv.)
+            </p>
             <p className="mt-1 font-serif text-2xl font-bold text-foreground">
-              ${totalBalance.toLocaleString()}
+              {formatUSD(totalUSD)}
             </p>
             <p className="mt-1 flex items-center gap-1 text-xs text-success">
               <TrendingUp className="h-3 w-3" />
@@ -222,11 +298,11 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {wallets.length === 0 ? (
+        {walletsWithUSD.length === 0 ? (
           <p className="text-sm text-muted-foreground">No wallets found.</p>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {wallets.map((wallet) => (
+            {walletsWithUSD.map((wallet) => (
               <Card key={wallet.currency} className="border-border">
                 <CardContent className="p-5">
                   <div className="flex items-center justify-between">
@@ -245,9 +321,21 @@ export default function DashboardPage() {
                       </span>
                     )}
                   </div>
+
+                  {/* Native balance */}
                   <p className="mt-2 text-xl font-bold text-foreground">
                     {formatCurrency(wallet.balance, wallet.currency)}
                   </p>
+
+                  {/* USD equivalent */}
+                  {wallet.currency !== "USD" && (
+                    <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+                      <DollarSign className="h-3 w-3" />
+                      {wallet.usdEquivalent !== null
+                        ? `≈ ${formatUSD(wallet.usdEquivalent)}`
+                        : "Rate unavailable"}
+                    </p>
+                  )}
                 </CardContent>
               </Card>
             ))}
@@ -275,60 +363,72 @@ export default function DashboardPage() {
             </p>
           ) : (
             <div className="flex flex-col divide-y divide-border">
-              {transactions.map((tx) => (
-                <div
-                  key={tx.id}
-                  className="flex items-center justify-between py-3"
-                >
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`flex h-9 w-9 items-center justify-center rounded-full ${
-                        tx.type === "credit"
-                          ? "bg-success/10 text-success"
-                          : "bg-destructive/10 text-destructive"
-                      }`}
-                    >
-                      {tx.type === "credit" ? (
-                        <ArrowDownLeft className="h-4 w-4" />
-                      ) : (
-                        <ArrowUpRight className="h-4 w-4" />
+              {transactions.map((tx) => {
+                const txUSD = toUSD(Math.abs(tx.amount), tx.currency, rateMap)
+                return (
+                  <div
+                    key={tx.id}
+                    className="flex items-center justify-between py-3"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={`flex h-9 w-9 items-center justify-center rounded-full ${
+                          tx.type === "credit"
+                            ? "bg-success/10 text-success"
+                            : "bg-destructive/10 text-destructive"
+                        }`}
+                      >
+                        {tx.type === "credit" ? (
+                          <ArrowDownLeft className="h-4 w-4" />
+                        ) : (
+                          <ArrowUpRight className="h-4 w-4" />
+                        )}
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-foreground">
+                          {tx.description}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatDate(tx.created_at)}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      {/* Native amount */}
+                      <p
+                        className={`text-sm font-semibold ${
+                          tx.type === "credit"
+                            ? "text-success"
+                            : "text-foreground"
+                        }`}
+                      >
+                        {tx.type === "credit" ? "+" : ""}
+                        {formatCurrency(Math.abs(tx.amount), tx.currency)}
+                      </p>
+
+                      {/* USD equivalent for non-USD transactions */}
+                      {tx.currency !== "USD" && txUSD !== null && (
+                        <p className="text-xs text-muted-foreground">
+                          ≈ {formatUSD(txUSD)}
+                        </p>
                       )}
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-foreground">
-                        {tx.description}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {formatDate(tx.created_at)}
-                      </p>
+
+                      <Badge
+                        variant={
+                          tx.status === "completed"
+                            ? "secondary"
+                            : tx.status === "pending"
+                            ? "outline"
+                            : "destructive"
+                        }
+                        className="text-xs"
+                      >
+                        {tx.status}
+                      </Badge>
                     </div>
                   </div>
-                  <div className="text-right">
-                    <p
-                      className={`text-sm font-semibold ${
-                        tx.type === "credit"
-                          ? "text-success"
-                          : "text-foreground"
-                      }`}
-                    >
-                      {tx.type === "credit" ? "+" : ""}
-                      {formatCurrency(Math.abs(tx.amount), tx.currency)}
-                    </p>
-                    <Badge
-                      variant={
-                        tx.status === "completed"
-                          ? "secondary"
-                          : tx.status === "pending"
-                          ? "outline"
-                          : "destructive"
-                      }
-                      className="text-xs"
-                    >
-                      {tx.status}
-                    </Badge>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </CardContent>
