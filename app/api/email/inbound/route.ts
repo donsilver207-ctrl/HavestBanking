@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
     to_address:   Array.isArray(to) ? to[0] : to,
     subject,
     body_text:    body,
-    preview:      body.slice(0, 120),
+   // preview:      body.slice(0, 120),
     read:         false,
     starred:      false,
     attachments:  files,
