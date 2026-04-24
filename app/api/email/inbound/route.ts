@@ -1,5 +1,5 @@
-import { Resend } from "resend"
 import { Webhook } from "svix"
+import { Resend } from "resend"
 import { createClient } from "@supabase/supabase-js"
 import { NextRequest, NextResponse } from "next/server"
 
@@ -31,18 +31,15 @@ export async function POST(req: NextRequest) {
 
   const { email_id, from, to, subject, attachments } = payload.data
 
-  // ✅ Correct API for inbound/received emails
-  const { data: emailData, error } = await resend.emails.get(email_id)
-  
-  // Log what comes back so you can see the actual shape
-  console.log("Received email data:", JSON.stringify(emailData, null, 2))
-  console.log("Error:", error)
+  // ✅ Correct method for inbound emails
+  const { data: email, error } = await resend.emails.receiving.get(email_id)
 
-  // Resend's received email object uses these fields:
-  const body = (emailData as any)?.text 
-            ?? (emailData as any)?.html 
-            ?? ""
+  if (error || !email) {
+    console.error("Failed to fetch received email:", error)
+    return NextResponse.json({ error: "Failed to fetch email" }, { status: 500 })
+  }
 
+  const body  = email.text ?? email.html ?? ""
   const files = (attachments ?? []).map((a: any) => ({
     name: a.filename ?? a.name,
     size: "—",
@@ -60,7 +57,10 @@ export async function POST(req: NextRequest) {
     attachments:  files,
   })
 
-  if (dbError) console.error("Supabase insert error:", dbError)
+  if (dbError) {
+    console.error("Supabase insert error:", dbError)
+    return NextResponse.json({ error: dbError.message }, { status: 500 })
+  }
 
   return NextResponse.json({ ok: true })
 }
