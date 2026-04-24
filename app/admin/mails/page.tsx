@@ -362,7 +362,7 @@ function EmailDetail({
         </div>
 
         <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">
-          {email.body_text ?? "(empty)"}
+          {email.body_text ?? email.preview ?? "(empty)"}
         </p>
 
         {email.attachments?.length > 0 && (

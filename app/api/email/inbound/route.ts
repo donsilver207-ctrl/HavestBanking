@@ -39,7 +39,7 @@ try {
   return NextResponse.json({ error: "Invalid signature" }, { status: 401 })
 }
   // ── Process the verified payload ─────────────────────────────────────────
-  if (payload.type !== "email.received") {
+ /* if (payload.type !== "email.received") {
     return NextResponse.json({})
   }
 
@@ -62,7 +62,34 @@ try {
     read:         false,
     starred:      false,
     attachments:  files,
-  })
+  })*/
+
+
+    if (payload.type !== "email.received") {
+      return NextResponse.json({})
+    }
+
+    const { email_id, from, to, subject, text, html, attachments } = payload.data
+    //                                          ^^^^  ^^^^
+    //                                          These are in the payload already!
+
+    const body  = text ?? html ?? ""   // no resend.emails.get() needed
+    const files = (attachments ?? []).map((a: any) => ({
+      name: a.filename,
+      size: "—",
+    }))
+
+    await supabase.from("emails").insert({
+      direction:    "received",
+      from_address: from,
+      to_address:   Array.isArray(to) ? to[0] : to,
+      subject,
+      body_text:    body,
+      preview:      body.slice(0, 120),   // ← also populate preview while you're here
+      read:         false,
+      starred:      false,
+      attachments:  files,
+    })
 
   return NextResponse.json({ ok: true })
 }
