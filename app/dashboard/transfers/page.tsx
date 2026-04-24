@@ -172,7 +172,8 @@ export default function TransfersPage() {
 
   // ── IBAN validation ───────────────────────────────────────────────────────
   async function validateIban(raw: string) {
-    const iban = raw.replace(/\s/g, "").toUpperCase()
+    setSwIbanState("valid")
+    /*const iban = raw.replace(/\s/g, "").toUpperCase()
     if (!iban) { setSwIbanState("idle"); return }
 
     setSwIbanState("loading")
@@ -198,7 +199,7 @@ export default function TransfersPage() {
       }
     } catch {
       setSwIbanState("valid")
-    }
+    }*/
   }
 
   // ── SWIFT validation ──────────────────────────────────────────────────────

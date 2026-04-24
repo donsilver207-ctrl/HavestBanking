@@ -1,5 +1,21 @@
+"use client"
+
+import { useEffect, useState } from "react"
 import Link from "next/link"
-import { Shield } from "lucide-react"
+import { useRouter } from "next/navigation"
+import { Menu, Bell, LogOut, Loader2 } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { ThemeToggle } from "@/components/theme-toggle"
+import { DashboardSidebar } from "@/components/dashboard-sidebar"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { createClient } from "@/lib/supabase/client"
+
 import type { Metadata } from "next"
 
 
@@ -106,97 +122,110 @@ export const metadata: Metadata = {
   category: "finance",
 }
 
-function CrestmontLogo() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="32" height="32" role="img">
-      <title>Crestmont Banking logo</title>
-      <defs>
-        <linearGradient id="peakL" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#1a3a6b" />
-          <stop offset="100%" stopColor="#1E3A8A" />
-        </linearGradient>
-        <linearGradient id="peakR" x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="#2563EB" />
-          <stop offset="100%" stopColor="#3B82F6" />
-        </linearGradient>
-        <linearGradient id="midL" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#3B82F6" />
-          <stop offset="100%" stopColor="#2563EB" />
-        </linearGradient>
-        <linearGradient id="midR" x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="#60A5FA" />
-          <stop offset="100%" stopColor="#93C5FD" />
-        </linearGradient>
-        <linearGradient id="baseL" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor="#1D4ED8" />
-          <stop offset="100%" stopColor="#1a3a6b" />
-        </linearGradient>
-        <linearGradient id="baseR" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor="#3B82F6" />
-          <stop offset="100%" stopColor="#2563EB" />
-        </linearGradient>
-        <clipPath id="emblemClip">
-          <circle cx="100" cy="100" r="76" />
-        </clipPath>
-      </defs>
 
-      <circle cx="100" cy="100" r="76" fill="#1a3a6b" opacity="0.12" />
-      <circle cx="100" cy="100" r="76" fill="none" stroke="#1D4ED8" strokeWidth="1.5" />
-      <circle cx="100" cy="100" r="68" fill="none" stroke="#3B82F6" strokeWidth="0.5" strokeDasharray="3 5" opacity="0.4" />
-
-      <g clipPath="url(#emblemClip)">
-        <path d="M100,34 L100,68 L62,102 L24,102 Z" fill="url(#peakL)" />
-        <path d="M100,34 L176,102 L138,102 L100,68 Z" fill="url(#peakR)" />
-        <path d="M100,68 L100,102 L62,136 L24,136 Z" fill="url(#midL)" />
-        <path d="M100,68 L176,136 L138,136 L100,102 Z" fill="url(#midR)" />
-        <path d="M100,102 L100,166 L62,166 Z" fill="url(#baseL)" />
-        <path d="M100,102 L138,166 L100,166 Z" fill="url(#baseR)" />
-        <line x1="100" y1="34" x2="100" y2="166" stroke="white" strokeWidth="0.8" opacity="0.2" />
-        <line x1="24" y1="102" x2="176" y2="102" stroke="white" strokeWidth="0.8" opacity="0.12" />
-        <line x1="24" y1="136" x2="176" y2="136" stroke="white" strokeWidth="0.5" opacity="0.08" />
-      </g>
-    </svg>
-  )
-}
-export default function AuthLayout({
+export default function DashboardLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
-  return (
-    <div className="flex min-h-screen">
-      {/* Left branding panel */}
-      <div className="hidden flex-col justify-between bg-primary p-10 lg:flex lg:w-1/2">
-        <Link href="/" className="flex items-center gap-2">
-          <CrestmontLogo/>
-          <span className="font-serif text-xl font-bold text-primary-foreground">
-            Crestmont Bank
-          </span>
-        </Link>
-        <div>
-          <blockquote className="font-serif text-2xl font-medium leading-relaxed text-primary-foreground/90">
-            {'"Banking without borders. Wealth without limits."'}
-          </blockquote>
-          <p className="mt-4 text-sm text-primary-foreground/60">
-            Swiss-grade offshore banking for global citizens
-          </p>
-        </div>
-        <p className="text-xs text-primary-foreground/40">
-          {"2026 Crestmont Bank AG. Simulated platform."}
-        </p>
-      </div>
+  const router = useRouter()
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [user, setUser] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
 
-      {/* Right form panel */}
-      <div className="flex flex-1 flex-col justify-center px-4 py-12 sm:px-8 lg:px-16">
-        <div className="mb-8 lg:hidden">
-          <Link href="/" className="flex items-center gap-2">
-            <Shield className="h-6 w-6 text-primary" />
-            <span className="font-serif text-lg font-bold text-foreground">
-              Crestmont Bank
-            </span>
-          </Link>
-        </div>
-        <div className="mx-auto w-full max-w-md">{children}</div>
+  useEffect(() => {
+    const supabase = createClient()
+    const checkUser = async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
+
+      if (!user) {
+        router.push("/auth/login")
+        return
+      }
+
+      setUser(user)
+      setLoading(false)
+    }
+
+    checkUser()
+  }, [router])
+
+  const handleSignOut = async () => {
+    const supabase = createClient()
+    await supabase.auth.signOut()
+    router.push("/")
+  }
+
+  if (loading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex h-screen overflow-hidden bg-background">
+      <DashboardSidebar
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+      />
+
+      <div className="flex flex-1 flex-col overflow-hidden">
+        {/* Top header */}
+        <header className="flex h-16 items-center justify-between border-b border-border bg-background px-4 lg:px-6">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="lg:hidden"
+            onClick={() => setSidebarOpen(true)}
+          >
+            <Menu className="h-5 w-5" />
+          </Button>
+
+          <div className="hidden text-sm text-muted-foreground lg:block">
+            Welcome back, <span className="font-medium text-foreground">{user?.email?.split("@")[0] || "User"}</span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <Link href="/dashboard/notifications">
+              <Button variant="ghost" size="icon" className="relative">
+                <Bell className="h-5 w-5" />
+                <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-destructive" />
+              </Button>
+            </Link>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
+                    {user?.email?.substring(0, 2).toUpperCase()}
+                  </div>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem asChild>
+                  <Link href="/dashboard/settings">Settings</Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/dashboard/verification">Verification</Link>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleSignOut} className="cursor-pointer">
+                  <LogOut className="h-4 w-4" />
+                  Sign Out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </header>
+
+        {/* Main content */}
+        <main className="flex-1 overflow-y-auto p-4 lg:p-6">
+          {children}
+        </main>
       </div>
     </div>
   )

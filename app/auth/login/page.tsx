@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label"
 import { AlertCircle } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 
+
 export default function LoginPage() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)

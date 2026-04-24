@@ -51,7 +51,58 @@ interface Profile {
   last_name: string | null
   tier: number
 }
+function CrestmontLogo() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="32" height="32" role="img">
+      <title>Crestmont Banking logo</title>
+      <defs>
+        <linearGradient id="peakL" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#1a3a6b" />
+          <stop offset="100%" stopColor="#1E3A8A" />
+        </linearGradient>
+        <linearGradient id="peakR" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stopColor="#2563EB" />
+          <stop offset="100%" stopColor="#3B82F6" />
+        </linearGradient>
+        <linearGradient id="midL" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#3B82F6" />
+          <stop offset="100%" stopColor="#2563EB" />
+        </linearGradient>
+        <linearGradient id="midR" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stopColor="#60A5FA" />
+          <stop offset="100%" stopColor="#93C5FD" />
+        </linearGradient>
+        <linearGradient id="baseL" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor="#1D4ED8" />
+          <stop offset="100%" stopColor="#1a3a6b" />
+        </linearGradient>
+        <linearGradient id="baseR" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor="#3B82F6" />
+          <stop offset="100%" stopColor="#2563EB" />
+        </linearGradient>
+        <clipPath id="emblemClip">
+          <circle cx="100" cy="100" r="76" />
+        </clipPath>
+      </defs>
 
+      <circle cx="100" cy="100" r="76" fill="#1a3a6b" opacity="0.12" />
+      <circle cx="100" cy="100" r="76" fill="none" stroke="#1D4ED8" strokeWidth="1.5" />
+      <circle cx="100" cy="100" r="68" fill="none" stroke="#3B82F6" strokeWidth="0.5" strokeDasharray="3 5" opacity="0.4" />
+
+      <g clipPath="url(#emblemClip)">
+        <path d="M100,34 L100,68 L62,102 L24,102 Z" fill="url(#peakL)" />
+        <path d="M100,34 L176,102 L138,102 L100,68 Z" fill="url(#peakR)" />
+        <path d="M100,68 L100,102 L62,136 L24,136 Z" fill="url(#midL)" />
+        <path d="M100,68 L176,136 L138,136 L100,102 Z" fill="url(#midR)" />
+        <path d="M100,102 L100,166 L62,166 Z" fill="url(#baseL)" />
+        <path d="M100,102 L138,166 L100,166 Z" fill="url(#baseR)" />
+        <line x1="100" y1="34" x2="100" y2="166" stroke="white" strokeWidth="0.8" opacity="0.2" />
+        <line x1="24" y1="102" x2="176" y2="102" stroke="white" strokeWidth="0.8" opacity="0.12" />
+        <line x1="24" y1="136" x2="176" y2="136" stroke="white" strokeWidth="0.5" opacity="0.08" />
+      </g>
+    </svg>
+  )
+}
 export function DashboardSidebar({
   open,
   onClose,
@@ -181,7 +232,7 @@ export function DashboardSidebar({
       >
         <div className="flex h-16 items-center justify-between border-b border-sidebar-border px-4">
           <Link href="/" className="flex items-center gap-2">
-            <Shield className="h-6 w-6 text-sidebar-primary" />
+            <CrestmontLogo/>
             <span className="font-serif text-lg font-bold text-sidebar-foreground">
               Crestmont
             </span>
