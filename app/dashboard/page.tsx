@@ -10,6 +10,7 @@ import {
   ArrowRight,
   Shield,
   DollarSign,
+  RefreshCw,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -42,11 +43,6 @@ interface Profile {
   kyc_status: string
 }
 
-interface FxRate {
-  pair: string   // e.g. "CHF/USD", "EUR/USD"
-  rate: number   // how many USD per 1 unit of base currency
-}
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatCurrency(amount: number, currency: string) {
@@ -76,11 +72,14 @@ function formatDate(iso: string) {
 }
 
 /**
- * Convert an amount in `currency` to USD using the fx_rates map.
+ * Convert `amount` in `currency` → USD.
  *
- * The fx_rates table stores pairs like "CHF/USD" where rate = USD per 1 CHF.
- * If the wallet IS already USD, return as-is.
- * Falls back to null when no rate is found.
+ * Because /api/fx-sync stores BOTH directions (e.g. "USD/CHF" AND "CHF/USD"),
+ * this is a simple direct lookup: find "CURRENCY/USD" and multiply.
+ *
+ *   CHF/USD = 1.111  →  500 CHF * 1.111 = 555.55 USD  ✓
+ *   EUR/USD = 1.08   →  200 EUR * 1.08  = 216.00 USD  ✓
+ *   JPY/USD = 0.0067 →  10000 JPY * 0.0067 = 67 USD   ✓
  */
 function toUSD(
   amount: number,
@@ -88,19 +87,8 @@ function toUSD(
   rateMap: Record<string, number>
 ): number | null {
   if (currency === "USD") return amount
-
-  // Try direct pair first: e.g. "CHF/USD"
-  const directKey = `${currency}/USD`
-  if (rateMap[directKey] !== undefined) {
-    return amount * rateMap[directKey]
-  }
-
-  // Try inverse pair: e.g. "USD/CHF" → rate = CHF per 1 USD → invert
-  const inverseKey = `USD/${currency}`
-  if (rateMap[inverseKey] !== undefined && rateMap[inverseKey] !== 0) {
-    return amount / rateMap[inverseKey]
-  }
-
+  const rate = rateMap[`${currency}/USD`]
+  if (rate !== undefined) return amount * rate
   return null
 }
 
@@ -117,73 +105,84 @@ export default function DashboardPage() {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [rateMap, setRateMap] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
+  const [fxLastUpdated, setFxLastUpdated] = useState<Date | null>(null)
 
-  useEffect(() => {
-    async function fetchData() {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
+  async function loadData() {
+    setLoading(true)
 
-      if (!user) return
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (!user) return
 
-      const [walletsRes, txRes, profileRes, fxRes] = await Promise.all([
-        supabase
-          .from("wallets")
-          .select("id, currency, symbol, balance, change_percent")
-          .eq("user_id", user.id)
-          .order("balance", { ascending: false }),
+    // 1. Hit our API route (service-role key, bypasses RLS) to fetch + save rates.
+    //    Run in parallel with user data queries.
+    const [fxRes, walletsRes, txRes, profileRes] = await Promise.all([
+      fetch("/api/fx-sync").then((r) => r.json()).catch(() => ({ rates: {} })),
 
-        supabase
-          .from("transactions")
-          .select("id, type, description, amount, currency, status, created_at")
-          .eq("user_id", user.id)
-          .order("created_at", { ascending: false })
-          .limit(5),
+      supabase
+        .from("wallets")
+        .select("id, currency, symbol, balance, change_percent")
+        .eq("user_id", user.id)
+        .order("balance", { ascending: false }),
 
-        supabase
-          .from("profiles")
-          .select("tier, kyc_status")
-          .eq("id", user.id)
-          .single(),
+      supabase
+        .from("transactions")
+        .select("id, type, description, amount, currency, status, created_at")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false })
+        .limit(5),
 
-        // Fetch all FX rates — no user filter needed (public read policy)
-        supabase
-          .from("fx_rates")
-          .select("pair, rate"),
-      ])
+      supabase
+        .from("profiles")
+        .select("tier, kyc_status")
+        .eq("id", user.id)
+        .single(),
+    ])
 
-      if (walletsRes.data) setWallets(walletsRes.data)
-      if (txRes.data) setTransactions(txRes.data)
-      if (profileRes.data) setProfile(profileRes.data)
+    // 2. Use live rates from API route; fall back to DB read if route failed
+    let finalRateMap: Record<string, number> = fxRes.rates ?? {}
 
-      // Build a lookup map: { "CHF/USD": 1.1230, "EUR/USD": 1.0850, ... }
-      if (fxRes.data) {
-        const map: Record<string, number> = {}
-        for (const row of fxRes.data as FxRate[]) {
-          map[row.pair] = Number(row.rate)
+    if (Object.keys(finalRateMap).length === 0) {
+      const { data: dbRates } = await supabase
+        .from("fx_rates")
+        .select("pair, rate")
+
+      if (dbRates) {
+        for (const row of dbRates as { pair: string; rate: number }[]) {
+          finalRateMap[row.pair] = Number(row.rate)
         }
-        setRateMap(map)
       }
-
-      setLoading(false)
     }
 
-    fetchData()
-  }, [supabase])
+    if (walletsRes.data) setWallets(walletsRes.data)
+    if (txRes.data) setTransactions(txRes.data)
+    if (profileRes.data) setProfile(profileRes.data)
+    setRateMap(finalRateMap)
+    setFxLastUpdated(new Date())
+    setLoading(false)
+  }
 
-  // ── Derived values ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    loadData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-  // Total USD equivalent across all wallets
-  const totalUSD = wallets.reduce((sum, w) => {
-    const usd = toUSD(w.balance, w.currency, rateMap)
-    return usd !== null ? sum + usd : sum
-  }, 0)
+  // ── Derived values ───────────────────────────────────────────────────────
 
-  // Per-wallet USD equivalent
   const walletsWithUSD = wallets.map((w) => ({
     ...w,
     usdEquivalent: toUSD(w.balance, w.currency, rateMap),
   }))
+
+  const totalUSD = walletsWithUSD.reduce(
+    (sum, w) => (w.usdEquivalent !== null ? sum + w.usdEquivalent : sum),
+    0
+  )
+
+  const hasUnresolvableWallet = walletsWithUSD.some(
+    (w) => w.usdEquivalent === null && w.currency !== "USD"
+  )
 
   const isKycApproved = profile?.kyc_status === "approved"
   const tierLabel =
@@ -213,17 +212,27 @@ export default function DashboardPage() {
             Overview of your offshore portfolio
           </p>
         </div>
-        <Link href="/dashboard/transfers">
-          <Button className="gap-2">
-            <ArrowRight className="h-4 w-4" />
-            Quick Transfer
+        <div className="flex items-center gap-2">
+          {fxLastUpdated && (
+            <span className="text-xs text-muted-foreground hidden sm:inline">
+              FX updated {fxLastUpdated.toLocaleTimeString()}
+            </span>
+          )}
+          <Button variant="outline" size="sm" className="gap-2" onClick={loadData}>
+            <RefreshCw className="h-3.5 w-3.5" />
+            Refresh
           </Button>
-        </Link>
+          <Link href="/dashboard/transfers">
+            <Button className="gap-2">
+              <ArrowRight className="h-4 w-4" />
+              Quick Transfer
+            </Button>
+          </Link>
+        </div>
       </div>
 
       {/* Top stats */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {/* Total Balance → now shown in USD equivalent */}
         <Card className="border-border">
           <CardContent className="p-5">
             <p className="text-xs text-muted-foreground">
@@ -232,10 +241,16 @@ export default function DashboardPage() {
             <p className="mt-1 font-serif text-2xl font-bold text-foreground">
               {formatUSD(totalUSD)}
             </p>
-            <p className="mt-1 flex items-center gap-1 text-xs text-success">
-              <TrendingUp className="h-3 w-3" />
-              +2.4% this month
-            </p>
+            {hasUnresolvableWallet ? (
+              <p className="mt-1 text-xs text-amber-500">
+                * Some wallets excluded (no rate)
+              </p>
+            ) : (
+              <p className="mt-1 flex items-center gap-1 text-xs text-success">
+                <TrendingUp className="h-3 w-3" />
+                Live FX rates applied
+              </p>
+            )}
           </CardContent>
         </Card>
 
@@ -290,10 +305,7 @@ export default function DashboardPage() {
           <h2 className="text-lg font-semibold text-foreground">
             Currency Wallets
           </h2>
-          <Link
-            href="/dashboard/wallets"
-            className="text-sm text-primary hover:underline"
-          >
+          <Link href="/dashboard/wallets" className="text-sm text-primary hover:underline">
             View All
           </Link>
         </div>
@@ -322,12 +334,10 @@ export default function DashboardPage() {
                     )}
                   </div>
 
-                  {/* Native balance */}
                   <p className="mt-2 text-xl font-bold text-foreground">
                     {formatCurrency(wallet.balance, wallet.currency)}
                   </p>
 
-                  {/* USD equivalent */}
                   {wallet.currency !== "USD" && (
                     <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
                       <DollarSign className="h-3 w-3" />
@@ -349,27 +359,19 @@ export default function DashboardPage() {
           <CardTitle className="text-lg font-semibold text-foreground">
             Recent Transactions
           </CardTitle>
-          <Link
-            href="/dashboard/transactions"
-            className="text-sm text-primary hover:underline"
-          >
+          <Link href="/dashboard/transactions" className="text-sm text-primary hover:underline">
             View All
           </Link>
         </CardHeader>
         <CardContent>
           {transactions.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No transactions yet.
-            </p>
+            <p className="text-sm text-muted-foreground">No transactions yet.</p>
           ) : (
             <div className="flex flex-col divide-y divide-border">
               {transactions.map((tx) => {
                 const txUSD = toUSD(Math.abs(tx.amount), tx.currency, rateMap)
                 return (
-                  <div
-                    key={tx.id}
-                    className="flex items-center justify-between py-3"
-                  >
+                  <div key={tx.id} className="flex items-center justify-between py-3">
                     <div className="flex items-center gap-3">
                       <div
                         className={`flex h-9 w-9 items-center justify-center rounded-full ${
@@ -394,19 +396,15 @@ export default function DashboardPage() {
                       </div>
                     </div>
                     <div className="text-right">
-                      {/* Native amount */}
                       <p
                         className={`text-sm font-semibold ${
-                          tx.type === "credit"
-                            ? "text-success"
-                            : "text-foreground"
+                          tx.type === "credit" ? "text-success" : "text-foreground"
                         }`}
                       >
                         {tx.type === "credit" ? "+" : ""}
                         {formatCurrency(Math.abs(tx.amount), tx.currency)}
                       </p>
 
-                      {/* USD equivalent for non-USD transactions */}
                       {tx.currency !== "USD" && txUSD !== null && (
                         <p className="text-xs text-muted-foreground">
                           ≈ {formatUSD(txUSD)}
