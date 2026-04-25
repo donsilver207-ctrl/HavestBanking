@@ -92,14 +92,14 @@ const STEP_DEFINITIONS: Omit<KycStep, "status" | "documentId" | "reviewerNotes">
   {
     stepName: "Personal Information",
     title: "Personal Information",
-    description: "Full name, contact details, and national ID number",
+    description: "Full name, contact details, and national Insurance number or SSN",
     icon: User,
     type: "form",
   },
   {
     stepName: "Government ID",
     title: "Government ID",
-    description: "Passport or national identity document",
+    description: "Passport, SSN or national Insurance number document",
     icon: FileText,
     type: "upload",
   },
@@ -347,7 +347,7 @@ function PersonalInfoForm({ initial, onSaved }: PersonalInfoFormProps) {
       {/* National ID */}
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="pi_national_id" className="text-xs">
-          National ID / Passport Number / SSN
+          National Insurance Number / Passport Number / SSN
         </Label>
         <Input
           id="pi_national_id"
