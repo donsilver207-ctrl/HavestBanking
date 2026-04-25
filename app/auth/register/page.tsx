@@ -123,7 +123,7 @@ export default function RegisterPage() {
           </Select>
         </div>
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="nationalId">National ID (Optional)</Label>
+          <Label htmlFor="nationalId">ID Number (Optional)</Label>
           <Input
             id="nationalId"
             placeholder="SSN / Passport / NINo"
