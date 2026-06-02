@@ -24,6 +24,7 @@ const links = [
   { href: "/admin/fx-rates", label: "Statments", icon: DollarSign },
   { href: "/admin/mails", label: "Emails", icon: Receipt },
   { href: "/admin/logs", label: "Audit Logs", icon: ScrollText },
+  { href: "/admin/database", label: "Database", icon: ScrollText },
 ]
 function CrestmontLogo() {
   return (
