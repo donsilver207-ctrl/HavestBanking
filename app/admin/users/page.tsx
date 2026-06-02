@@ -40,7 +40,8 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { createClient } from "@/lib/supabase/client"
-
+import { useRouter } from "next/navigation"
+// ... existing imports
 type Profile = {
   id: string
   first_name: string | null
@@ -84,6 +85,8 @@ function SendNotifModal({ open, user, onClose }: SendNotifModalProps) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
+
+
 
   function reset() {
     setTitle("")
@@ -297,7 +300,8 @@ export default function AdminUsersPage() {
   const [search, setSearch] = useState("")
   const [notifTarget, setNotifTarget] = useState<UserWithBalance | null>(null)
   const supabase = createClient()
-
+const router = useRouter()
+const [impersonating, setImpersonating] = useState<string | null>(null) // track which user is being impersonated
   useEffect(() => {
     fetchUsers()
   }, [])
@@ -401,6 +405,41 @@ export default function AdminUsersPage() {
       u.id.toLowerCase().includes(q)
     )
   })
+
+    async function impersonateUser(userId: string, email: string | null) {
+  if (!email) {
+    console.error("User has no email")
+    return
+  }
+
+  setImpersonating(userId)
+  try {
+    const res = await fetch("/api/admin/impersonate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId, email }),
+    })
+
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || "Impersonation failed")
+
+    // Set the session in the client-side Supabase client
+    const { error: sessionError } = await supabase.auth.setSession({
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+    })
+
+    if (sessionError) throw sessionError
+
+    // Redirect to the user's dashboard (or wherever you want)
+    router.push("/dashboard")
+  } catch (err: any) {
+    console.error("Impersonation error:", err)
+    alert(err.message || "Failed to login as user")
+  } finally {
+    setImpersonating(null)
+  }
+}
 
   return (
     <div className="flex flex-col gap-6">
@@ -538,6 +577,20 @@ export default function AdminUsersPage() {
                             >
                               <Bell className="h-4 w-4" />
                               Send Notification
+                            </DropdownMenuItem>
+
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              className="gap-2"
+                              disabled={impersonating === user.id}
+                              onSelect={() => impersonateUser(user.id, user.email)}
+                            >
+                              {impersonating === user.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <UserCheck className="h-4 w-4" />
+                              )}
+                              {impersonating === user.id ? "Logging in..." : "Login as User"}
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
